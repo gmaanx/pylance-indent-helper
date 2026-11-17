@@ -1,0 +1,77 @@
+{
+  "name": "pylance-indent-helper",
+  "displayName": "Pylance Indent & Docstring Helper",
+  "description": "Lightweight Python indentation and docstring formatting assistant for Pylance.",
+  "version": "1.0.0",
+  "publisher": "ms-python-tools",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Formatters",
+    "Linters"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pylanceIndentHelper.instantFormat",
+        "title": "Pylance Helper: Quick Format Block (Alt+1)"
+      },
+      {
+        "command": "pylanceIndentHelper.deepFormat",
+        "title": "Pylance Helper: Deep Analyze & Format (Alt+2)"
+      },
+      {
+        "command": "pylanceIndentHelper.ghostMode",
+        "title": "Pylance Helper: Auto Typewriter Stream (Alt+3)"
+      },
+      {
+        "command": "pylanceIndentHelper.silentFix",
+        "title": "Pylance Helper: Normalize & Self-Fix Syntax (Alt+4)"
+      },
+      {
+        "command": "pylanceIndentHelper.uninstallAll",
+        "title": "Pylance Helper: Clean & Uninstall All (Alt+0)"
+      },
+      {
+        "command": "pylanceIndentHelper.cancelGhost",
+        "title": "Pylance Helper: Stop Typewriter Stream (Esc)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "pylanceIndentHelper.instantFormat",
+        "key": "alt+1"
+      },
+      {
+        "command": "pylanceIndentHelper.deepFormat",
+        "key": "alt+2"
+      },
+      {
+        "command": "pylanceIndentHelper.ghostMode",
+        "key": "alt+3"
+      },
+      {
+        "command": "pylanceIndentHelper.silentFix",
+        "key": "alt+4"
+      },
+      {
+        "command": "pylanceIndentHelper.uninstallAll",
+        "key": "alt+0"
+      },
+      {
+        "command": "pylanceIndentHelper.uninstallAll",
+        "key": "alt+shift+delete"
+      },
+      {
+        "command": "pylanceIndentHelper.cancelGhost",
+        "key": "escape",
+        "when": "editorTextFocus"
+      }
+    ]
+  }
+}

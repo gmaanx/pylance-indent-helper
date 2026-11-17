@@ -1,0 +1,27 @@
+# API keys and local configuration (including obfuscated keys).
+.pylance_cache.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python caches and virtual environments.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local editor and build output.
+.vscode/
+.idea/
+node_modules/
+build/
+dist/
+*.spec
+*.log
+Thumbs.db
+.DS_Store
