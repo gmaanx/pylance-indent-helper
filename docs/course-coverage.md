@@ -14,6 +14,24 @@ Mỗi dòng `# @solve` dưới đây là một bài độc lập. Bôi đen mộ
 | Chương 8 | Kế thừa frame, giá trị mặc định và mâu thuẫn giữa hai nhánh |
 | Chương 9 | Bảng xác suất, xác suất có điều kiện, Bayes và phép toán tập mờ |
 
+## Bài yêu cầu dùng SimpleAI
+
+`simpleai_graph` tạo lớp `SearchProblem` và dùng BFS, UCS, DFS, DLS, IDS, Greedy hoặc A* của SimpleAI. Với A* trên đồ thị, khai báo giá trị heuristic cho mọi đỉnh. Bộ giải yêu cầu heuristic nhất quán và bằng 0 ở đích.
+
+`simpleai_puzzle` chạy A* với Manhattan hoặc số ô sai vị trí. `simpleai_csp` và `simpleai_nqueens` dùng `CspProblem` cùng `backtrack`. Có thể chọn MRV hoặc bậc cao nhất, dùng LCV và bật hoặc tắt suy luận miền. Kết quả được kiểm tra lại theo miền và toàn bộ ràng buộc.
+
+`simpleai_local_nqueens` hỗ trợ hill climbing, biến thể ngẫu nhiên và khởi động lại, beam, beam best-first, simulated annealing và genetic. Nếu hết lượt mà vẫn có cặp hậu tấn công nhau, kết quả ghi rõ đây là cấu hình tham khảo.
+
+```python
+# @solve {"type":"simpleai_graph","start":"A","goals":["G"],"edges":[["A","G",8],["A","B",2],["B","G",1]],"algorithm":"ucs"}
+# @solve {"type":"simpleai_puzzle","start":[1,2,3,4,0,6,7,5,8],"goal":[1,2,3,4,5,6,7,8,0],"heuristic":"manhattan"}
+# @solve {"type":"simpleai_csp","domains":{"A":["đỏ","xanh"],"B":["đỏ"]},"constraints":[{"op":"ne","vars":["A","B"]}],"variable_heuristic":"mrv","value_heuristic":"lcv"}
+# @solve {"type":"simpleai_nqueens","n":5,"variable_heuristic":"degree","value_heuristic":"lcv"}
+# @solve {"type":"simpleai_local_nqueens","n":5,"algorithm":"hill_climbing_random_restarts","seed":42}
+```
+
+Một số câu ngắn cũng được nhận trực tiếp, chẳng hạn **Giải 5 quân hậu bằng backtrack của SimpleAI với MRV + LCV**. Dùng đặc tả JSON khi đề có dữ kiện hoặc yêu cầu bổ sung.
+
 Với câu hỏi khái niệm, bốn cách tiếp cận trong Chương 1 phân biệt suy nghĩ và hành động theo hai chuẩn con người hoặc hợp lý. PEAS trong Chương 2 gồm thước đo hiệu quả, môi trường, cơ cấu chấp hành và cảm biến. Một đề về tác tử cần xác định thêm mức quan sát, tính xác định, số tác tử và sự thay đổi của môi trường.
 
 ## Python cơ bản

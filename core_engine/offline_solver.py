@@ -33,6 +33,7 @@ class OfflineSolution:
     diagnostics: Tuple[str, ...]
     # Scalar answer for an independently computed check of a Cloud example.
     metric: Optional[Tuple[str, object]] = None
+    validation_status: str = "verified"
 
 
 def _reconstruct(parent, state):
@@ -645,6 +646,9 @@ def solve_spec(problem: object) -> OfflineSolution:
     from .offline_optimization import OPTIMIZATION_SOLVERS
     from .offline_python_basics import PYTHON_BASICS_SOLVERS
     from .offline_search import SEARCH_SOLVERS
+    from .offline_simpleai_csp import SIMPLEAI_CSP_SOLVERS
+    from .offline_simpleai_local import SIMPLEAI_LOCAL_SOLVERS
+    from .offline_simpleai_search import SIMPLEAI_SEARCH_SOLVERS
     from .offline_uncertainty import UNCERTAINTY_SOLVERS
 
     if not isinstance(problem, dict):
@@ -660,6 +664,7 @@ def solve_spec(problem: object) -> OfflineSolution:
         **AGENT_SOLVERS, **COURSE_CSP_SOLVERS, **COURSE_LOGIC_SOLVERS,
         **COURSE_SEARCH_SOLVERS, **KNOWLEDGE_SOLVERS, **PYTHON_BASICS_SOLVERS,
         **UNCERTAINTY_SOLVERS, **LOCAL_SEARCH_SOLVERS,
+        **SIMPLEAI_CSP_SOLVERS, **SIMPLEAI_SEARCH_SOLVERS, **SIMPLEAI_LOCAL_SOLVERS,
     }
     if not isinstance(problem_type, str) or problem_type not in solvers:
         raise OfflineProblemError("unsupported", "type cần là một trong các dạng: " + ", ".join(sorted(solvers)) + ".")

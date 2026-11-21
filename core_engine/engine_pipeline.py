@@ -102,7 +102,7 @@ def process_request(
         else:
             if solution is not None:
                 return finish(
-                    "verified", f"offline_{solution.problem_type}", solution.code,
+                    solution.validation_status, f"offline_{solution.problem_type}", solution.code,
                     summary=solution.summary, notes=(solution.summary, *solution.diagnostics),
                 )
 

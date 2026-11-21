@@ -25,6 +25,7 @@ SOURCE = Path(__file__).resolve().parent
 WHEELS = SOURCE / "setup_lab" / "wheels"
 IDE_NAMES = {"vscode": "code", "antigravity": "antigravity"}
 IDE_DIRS = {"vscode": "Microsoft VS Code", "antigravity": "antigravity"}
+DEPENDENCIES = {"simpleai": ("simpleai",), "full": ("simpleai", "miniKanren", "sympy")}
 
 
 def find_ide_cli(ide: str) -> Path | None:
@@ -43,14 +44,16 @@ def find_ide_cli(ide: str) -> Path | None:
     return None
 
 
-def check_install(ide: str, ide_cli: Path | None) -> tuple[Path | None, Path]:
+def check_install(ide: str, ide_cli: Path | None, profile: str = "simpleai") -> tuple[Path | None, Path]:
     if sys.platform != "win32" or sys.version_info < (3, 10):
         raise RuntimeError("Can Windows va Python 3.10 tro len.")
     bootstrap = Path(sys._base_executable).resolve()
     if not bootstrap.is_file():
         raise RuntimeError(f"Khong tim thay Python goc: {bootstrap}")
-    if not any(WHEELS.glob("*.whl")):
-        raise RuntimeError("Khong tim thay goi offline trong setup_lab/wheels.")
+    missing = [name for name in DEPENDENCIES[profile] if not any(WHEELS.glob(f"{name.lower()}-*.whl"))]
+    if missing:
+        packages = ", ".join(missing)
+        raise RuntimeError(f"Goi offline thieu {packages}. Dung ban ZIP full neu can thu vien bo sung.")
 
     if ide == "manual":
         if ide_cli is not None:
@@ -90,7 +93,7 @@ def run_python(python: Path, *args: str, cwd: Path, timeout: int, input_text=Non
     return result.stdout
 
 
-def prepare_engine(runtime: Path, bootstrap: Path) -> Path:
+def prepare_engine(runtime: Path, bootstrap: Path, profile: str = "simpleai") -> Path:
     python = runtime / ".venv" / "Scripts" / "python.exe"
     run_python(bootstrap, "-m", "venv", str(runtime / ".venv"), cwd=runtime, timeout=120)
     print("Dang cai thu vien Python tu goi offline...", flush=True)
@@ -98,7 +101,7 @@ def prepare_engine(runtime: Path, bootstrap: Path) -> Path:
         python, "-m", "pip", "--isolated", "install",
         "--no-index", "--no-cache-dir", "--disable-pip-version-check",
         "--find-links", str(WHEELS),
-        "simpleai", "miniKanren", "sympy",
+        *DEPENDENCIES[profile],
         cwd=runtime, timeout=180,
     )
     shutil.copytree(
@@ -110,10 +113,13 @@ def prepare_engine(runtime: Path, bootstrap: Path) -> Path:
     return python
 
 
-def smoke_test(python: Path, runtime: Path) -> None:
-    run_python(python, "-c", "import simpleai, kanren, sympy", cwd=runtime, timeout=30)
+def smoke_test(python: Path, runtime: Path, profile: str = "simpleai") -> None:
+    imports = "from simpleai.search import SearchProblem, astar, CspProblem, backtrack"
+    if profile == "full":
+        imports += "\nimport kanren, sympy"
+    run_python(python, "-c", imports, cwd=runtime, timeout=30)
     request = json.dumps({
-        "text": '# @solve {"type":"coin_change","amount":17,"denominations":[4,7,9],"algorithm":"bfs"}',
+        "text": '# @solve {"type":"simpleai_graph","start":"A","goals":["B"],"edges":[["A","B"]],"algorithm":"bfs"}',
         "mode": "instant",
         "verify": False,
     })
@@ -124,14 +130,14 @@ def smoke_test(python: Path, runtime: Path) -> None:
         cwd=runtime, timeout=30, input_text=request,
     ))
     if (
-        reply.get("tier_used") != "offline_coin_change"
+        reply.get("tier_used") != "offline_simpleai_graph"
         or reply.get("validation_status") != "verified"
         or not reply.get("code")
     ):
         raise RuntimeError("Kiem tra offline khong tao duoc loi giai da xac minh.")
 
 
-def install_all(ide_cli: Path | None, bootstrap: Path) -> None:
+def install_all(ide_cli: Path | None, bootstrap: Path, profile: str = "simpleai") -> None:
     root = install_root()
     with install_lock(root):
         root.mkdir(exist_ok=True)
@@ -142,8 +148,8 @@ def install_all(ide_cli: Path | None, bootstrap: Path) -> None:
         installed = False
         try:
             print(f"Dang tao moi truong Python rieng tai {runtime}", flush=True)
-            python = prepare_engine(runtime, bootstrap)
-            smoke_test(python, runtime)
+            python = prepare_engine(runtime, bootstrap, profile)
+            smoke_test(python, runtime, profile)
 
             pkg = json.loads((SOURCE / "shells" / "vscode_ext" / "package.json").read_text(encoding="utf-8"))
             extension_id = f"{pkg['publisher']}.{pkg['name']}"
@@ -162,6 +168,7 @@ def install_all(ide_cli: Path | None, bootstrap: Path) -> None:
             config = {
                 "engineRoot": str(runtime),
                 "python": str(python),
+                "dependencyProfile": profile,
                 "uninstallPython": str(bootstrap),
                 "ides": ides,
                 "manualExtension": ide_cli is None or previous.get("manualExtension", False),
@@ -182,7 +189,8 @@ def install_all(ide_cli: Path | None, bootstrap: Path) -> None:
                 except OSError as exc:
                     print(f"[CANH BAO] Khong xoa duoc ban cu {obsolete.name}. {exc}")
 
-        print("[OK] Python va che do offline da duoc kiem tra.")
+        print(f"[OK] Python va che do offline ({profile}) da duoc kiem tra.")
+        print(f"Python de chay bai trong IDE: {python}")
         if ide_cli is None:
             print(f"Cai extension trong IDE qua Extensions > Install from VSIX: {vsix}")
         print("Neu IDE dang mo, dung Reload Window de nap ban moi.")
@@ -192,16 +200,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ide", choices=("auto", *IDE_NAMES, "manual"), default="auto")
     parser.add_argument("--ide-cli", type=Path, help="Duong dan day du den CLI cua IDE.")
+    parser.add_argument("--profile", choices=DEPENDENCIES, default="simpleai", help="simpleai gon nhe; full them miniKanren va SymPy.")
     parser.add_argument("--check", action="store_true", help="Kiem tra Python, goi offline va CLI.")
     args = parser.parse_args()
     try:
-        cli, python = check_install(args.ide, args.ide_cli)
+        cli, python = check_install(args.ide, args.ide_cli, args.profile)
         if args.check:
             print(f"[OK] Python {sys.version.split()[0]}: {python}")
-            print(f"[OK] Goi offline: {WHEELS}")
+            print(f"[OK] Goi offline ({args.profile}): {WHEELS}")
             print(f"[OK] IDE: {cli or 'Cai VSIX tu menu Extensions'}")
         else:
-            install_all(cli, python)
+            install_all(cli, python, args.profile)
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"[LOI] Cai dat chua hoan tat. {exc}", file=sys.stderr)
         return 1

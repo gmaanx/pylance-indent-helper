@@ -1,5 +1,6 @@
 """Bundle the Windows installer, engine, and offline wheels."""
 
+import argparse
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -20,15 +21,16 @@ INCLUDE = (
     "shells/vscode_ext/package.json",
     "shells/vscode_ext/src/*.js",
     "core_engine/**/*.py",
-    "setup_lab/wheels/*.whl",
 )
 
 
-def build() -> Path:
-    output = ROOT / "dist" / "python-ai-helper-windows.zip"
+def build(full: bool = False) -> Path:
+    filename = "python-ai-helper-windows-full.zip" if full else "python-ai-helper-windows.zip"
+    output = ROOT / "dist" / filename
     output.parent.mkdir(exist_ok=True)
     with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
-        for pattern in INCLUDE:
+        wheel_pattern = "setup_lab/wheels/*.whl" if full else "setup_lab/wheels/simpleai-*.whl"
+        for pattern in (*INCLUDE, wheel_pattern):
             paths = sorted(ROOT.glob(pattern))
             if not paths:
                 raise FileNotFoundError(f"Missing release input: {pattern}")
@@ -38,4 +40,6 @@ def build() -> Path:
 
 
 if __name__ == "__main__":
-    print(build())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--full", action="store_true", help="Include optional miniKanren and SymPy wheels.")
+    print(build(parser.parse_args().full))

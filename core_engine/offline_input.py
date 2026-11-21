@@ -34,6 +34,12 @@ _PARITY_PROMPT = re.compile(
     r"\s+(?:trong\s+)?(?:danh sach\s*)?:?\s*(?P<items>\[[\s0-9,-]*\])[.\s]*"
 )
 _PRIMES_PROMPT = re.compile(r"(?:in|liet ke|tim)\s+(?P<count>[0-9]{1,4})\s+so nguyen to dau tien[.\s]*")
+_SIMPLEAI_QUEENS = re.compile(
+    r"(?:giai|xep)\s+(?:bai toan\s+)?(?P<n>[0-9]{1,2})\s+quan hau"
+    r"(?:\s+tren ban co (?P<rows>[0-9]{1,2})\s*[x×]\s*(?P<cols>[0-9]{1,2}))?"
+    r"\s+bang\s+(?:simpleai|(?:backtrack(?:ing)?|quay lui) (?:cua|voi) simpleai)"
+    r"(?:\s+voi\s+(?P<variable>mrv|degree)(?:\s*(?:\+|va)\s*(?P<value>lcv))?)?[.\s]*"
+)
 
 
 def _board(text):
@@ -103,6 +109,17 @@ def read_known_format(text):
         problem = {"type": "fibonacci", "count": int(match["count"])}
         if match["a"] is not None:
             problem["initial"] = [int(match["a"]), int(match["b"])]
+        return problem
+    match = _SIMPLEAI_QUEENS.fullmatch(normalized)
+    if match:
+        n = int(match["n"])
+        if match["rows"] is not None and (int(match["rows"]) != n or int(match["cols"]) != n):
+            raise ValueError("Số hậu cần khớp với hai chiều bàn cờ trong dạng N hậu.")
+        problem = {"type": "simpleai_nqueens", "n": n}
+        if match["variable"]:
+            problem["variable_heuristic"] = match["variable"]
+        if match["value"]:
+            problem["value_heuristic"] = match["value"]
         return problem
     match = _QUEENS_PROMPT.fullmatch(normalized)
     if match:

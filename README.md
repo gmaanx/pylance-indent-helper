@@ -1,6 +1,6 @@
 ﻿# Trợ lý bài tập Python
 
-Tiện ích Windows hỗ trợ luyện bài Python trong VS Code hoặc Antigravity. Bộ giải offline hỗ trợ 42 dạng Python cơ bản, tìm kiếm, logic, tối ưu, xác suất và học máy có đặc tả. Với yêu cầu khác, tool có thể đưa ra mẫu tham khảo hoặc gửi yêu cầu đến nhà cung cấp Cloud do bạn chọn. Trong bài thi, dùng các chế độ mà quy chế cho phép.
+Tiện ích Windows hỗ trợ luyện bài Python trong VS Code hoặc Antigravity. Bộ giải offline hỗ trợ 47 dạng bài có đặc tả. Các bài thực hành yêu cầu SimpleAI có bộ giải xuất mã dùng trực tiếp thư viện này. Các bộ giải còn lại chủ yếu dùng thư viện chuẩn Python. Trong bài thi, dùng các chế độ mà quy chế cho phép.
 
 ## Cài đặt offline
 
@@ -22,7 +22,9 @@ py -3 setup.py --ide antigravity
 
 Nếu IDE không có CLI, chạy `py -3 setup.py --ide manual`, sau đó chọn **Extensions → Install from VSIX** và mở file VSIX mà trình cài in ra.
 
-Người đóng gói có thể tạo ZIP cài đặt bằng `py -3 setup_lab/build_release.py`. Gói nằm trong `dist/` và chứa một bộ wheel, mã runtime, extension và các script cần dùng.
+Gói mặc định chỉ kèm SimpleAI. Nếu cần chạy các mẫu cũ có `import kanren` hoặc `import sympy`, tạo gói với `py -3 setup_lab/build_release.py --full` và cài bằng `setup_nhanh.bat --profile full`. Lệnh `py -3 setup_lab/build_release.py` tạo gói mặc định. Cả hai ZIP nằm trong `dist/`.
+
+Để chạy code đã xuất trong IDE, chọn trình thông dịch Python tại đường dẫn trình cài in ra. Trong VS Code có Python extension, mở **Python: Select Interpreter** rồi chọn hoặc nhập đường dẫn này.
 
 ## Dùng trong IDE
 
@@ -42,7 +44,7 @@ Có thể tìm các lệnh trong **Ctrl+Shift+P**. Lệnh hủy hiện ở thôn
 
 Bộ giải đọc những câu mô tả đơn giản mà nó nhận diện được. Với dữ liệu dài hoặc cần kết quả có thể kiểm tra, viết một dòng comment `# @solve` chứa JSON. Đặt trong file riêng hoặc bôi đen đúng dòng đó trước khi chạy `Alt+1`.
 
-Xem bảng đối chiếu bài tập theo từng buổi, các chương bài giảng và 21 ví dụ bổ sung. [Phạm vi offline theo môn học](docs/course-coverage.md)
+Xem bảng đối chiếu bài tập theo từng buổi và ví dụ dùng SimpleAI. [Phạm vi offline theo môn học](docs/course-coverage.md)
 
 ### Đong nước
 
