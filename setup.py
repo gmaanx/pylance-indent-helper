@@ -1,194 +1,212 @@
-# -*- coding: utf-8 -*-
-"""
-Trình cài đặt siêu tốc (0.2 giây - Không cần USB - Không treo màn hình đen):
-1. Tự động tìm đúng Python thật trên máy (ưu tiên `D:\\UEH\\ai\\.venv\\Scripts\\python.exe`, bỏ qua Windows Store stub).
-2. Cài đặt trực tiếp Extension `pylance-indent-helper` vào CẢ HAI trình soạn thảo:
-   - VS Code (`%USERPROFILE%\\.vscode\\extensions\\`)
-   - Antigravity IDE (`%USERPROFILE%\\.antigravity-ide\\extensions\\`)
-   Và tự động đăng ký vào `extensions.json` để phím tắt `Alt+1`, `Alt+2`, `Alt+3`, `Alt+4`, `Alt+0` nhận ngay lập tức!
-3. Đồng bộ `core_engine` và `shells` vào `%LOCALAPPDATA%\\Programs\\PylanceHelper` (chỉ copy ~10 file code, KHÔNG copy 1500 file sympy gây treo máy!).
-4. Gắn đường dẫn `.pth` trỏ tới `offline_pkgs` để mọi trình soạn thảo đều `import simpleai`, `import kanren`, `import sympy` được ngay mà không cần chờ `pip install`.
-5. Khởi chạy ngầm `pythonw.exe` cho `daemon.pyw` (dùng `Ctrl+Alt+1..4,0` dự phòng cho IDLE để không tranh chấp phím `Alt+1..4,0` của VS Code/Antigravity).
-"""
+"""Install an offline runtime and a VSIX for the current Windows user."""
 
+import argparse
 import json
 import os
 import shutil
-import site
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
-from go_cai_dat import stop_daemon_processes
+from go_cai_dat import (
+    _remove_tree,
+    install_root,
+    install_lock,
+    list_extensions,
+    load_runtime,
+    run_ide_cli,
+    stop_daemon_processes,
+)
+from shells.vscode_ext.pack_vsix import build_vsix
 
 
-EXT_ID = "ms-python-tools.pylance-indent-helper"
-EXT_FOLDER_NAME = "ms-python-tools.pylance-indent-helper-1.0.0"
+SOURCE = Path(__file__).resolve().parent
+WHEELS = SOURCE / "setup_lab" / "wheels"
+IDE_NAMES = {"vscode": "code", "antigravity": "antigravity"}
+IDE_DIRS = {"vscode": "Microsoft VS Code", "antigravity": "antigravity"}
 
 
-def find_real_python() -> Path:
-    candidates = [
-        Path(r"D:\UEH\ai\.venv\Scripts\python.exe"),
-        Path(__file__).resolve().parent.parent / ".venv" / "Scripts" / "python.exe",
-        Path(sys.executable),
-    ]
-    local_progs = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python"
-    if local_progs.exists():
-        for p in sorted(local_progs.glob("Python3*/python.exe"), reverse=True):
-            candidates.append(p)
-
-    for cand in candidates:
-        if cand.exists() and "WindowsApps" not in str(cand):
-            return cand
-    return Path(sys.executable)
-
-
-def stop_existing_daemon() -> None:
-    stop_daemon_processes()
+def find_ide_cli(ide: str) -> Path | None:
+    name = IDE_NAMES[ide]
+    in_path = shutil.which(name)
+    if in_path:
+        return Path(in_path).resolve()
+    for variable in ("LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"):
+        if os.environ.get(variable):
+            base = Path(os.environ[variable])
+            if variable == "LOCALAPPDATA":
+                base = base / "Programs"
+            cli = base / IDE_DIRS[ide] / "bin" / (name + ".cmd")
+            if cli.is_file():
+                return cli.resolve()
+    return None
 
 
-def register_extension_in_ide(ide_ext_root: Path, src_ext_dir: Path) -> None:
-    ide_ext_root.mkdir(parents=True, exist_ok=True)
-    target_dir = ide_ext_root / EXT_FOLDER_NAME
-    if target_dir.exists():
-        shutil.rmtree(target_dir, ignore_errors=True)
-    target_dir.mkdir(parents=True, exist_ok=True)
+def check_install(ide: str, ide_cli: Path | None) -> tuple[Path | None, Path]:
+    if sys.platform != "win32" or sys.version_info < (3, 10):
+        raise RuntimeError("Can Windows va Python 3.10 tro len.")
+    bootstrap = Path(sys._base_executable).resolve()
+    if not bootstrap.is_file():
+        raise RuntimeError(f"Khong tim thay Python goc: {bootstrap}")
+    if not any(WHEELS.glob("*.whl")):
+        raise RuntimeError("Khong tim thay goi offline trong setup_lab/wheels.")
 
-    shutil.copy2(src_ext_dir / "package.json", target_dir / "package.json")
-    (target_dir / "src").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src_ext_dir / "src" / "extension.js", target_dir / "src" / "extension.js")
+    if ide == "manual":
+        if ide_cli is not None:
+            raise ValueError("--ide manual khong dung chung voi --ide-cli.")
+        return None, bootstrap
 
-    # Cap nhat extensions.json de VS Code & Antigravity IDE nhan dien Extension 100%
-    manifest_file = ide_ext_root / "extensions.json"
-    entries = []
-    if manifest_file.exists():
-        try:
-            entries = json.loads(manifest_file.read_text(encoding="utf-8"))
-            if not isinstance(entries, list):
-                entries = []
-        except Exception:
-            entries = []
+    if ide_cli is None:
+        candidates = IDE_NAMES if ide == "auto" else (ide,)
+        for candidate in candidates:
+            ide_cli = find_ide_cli(candidate)
+            if ide_cli:
+                break
+    if ide_cli is None or not ide_cli.is_file():
+        raise RuntimeError(
+            "Khong tim thay CLI cua IDE. Dung --ide-cli DUONG_DAN, "
+            "hoac --ide manual de tu cai VSIX tu menu Extensions."
+        )
+    cli = ide_cli.resolve()
+    list_extensions(cli)
+    return cli, bootstrap
 
-    entries = [
-        e for e in entries
-        if isinstance(e, dict) and e.get("identifier", {}).get("id") != EXT_ID
-    ]
 
-    fs_path_str = str(target_dir.resolve())
-    slash_path = "/" + fs_path_str.replace("\\", "/")
-    if len(slash_path) > 2 and slash_path[2] == ":":
-        slash_path = "/" + slash_path[1].lower() + slash_path[2:]
-    ext_uri = "file:///" + fs_path_str.replace("\\", "/").replace(":", "%3A")
-    if len(fs_path_str) > 1 and fs_path_str[1] == ":":
-        drive_low = fs_path_str[0].lower()
-        ext_uri = f"file:///{drive_low}%3A" + fs_path_str[2:].replace("\\", "/")
-
-    entries.append(
-        {
-            "identifier": {"id": EXT_ID},
-            "version": "1.0.0",
-            "location": {
-                "$mid": 1,
-                "fsPath": fs_path_str,
-                "_sep": 1,
-                "external": ext_uri,
-                "path": slash_path,
-                "scheme": "file",
-            },
-            "relativeLocation": EXT_FOLDER_NAME,
-            "metadata": {
-                "installedTimestamp": int(time.time() * 1000),
-                "pinned": True,
-                "source": "vsix",
-            },
-        }
+def run_python(python: Path, *args: str, cwd: Path, timeout: int, input_text=None) -> str:
+    command = [str(python), "-I", *args]
+    result = subprocess.run(
+        command,
+        cwd=cwd,
+        input=input_text,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
     )
+    if result.returncode:
+        detail = (result.stderr.strip() or result.stdout.strip())[-2000:]
+        raise RuntimeError(f"Python thoat voi ma {result.returncode}. {detail}")
+    return result.stdout
+
+
+def prepare_engine(runtime: Path, bootstrap: Path) -> Path:
+    python = runtime / ".venv" / "Scripts" / "python.exe"
+    run_python(bootstrap, "-m", "venv", str(runtime / ".venv"), cwd=runtime, timeout=120)
+    print("Dang cai thu vien Python tu goi offline...", flush=True)
+    run_python(
+        python, "-m", "pip", "--isolated", "install",
+        "--no-index", "--no-cache-dir", "--disable-pip-version-check",
+        "--find-links", str(WHEELS),
+        "simpleai", "miniKanren", "sympy",
+        cwd=runtime, timeout=180,
+    )
+    shutil.copytree(
+        SOURCE / "core_engine",
+        runtime / "core_engine",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pylance_cache.json"),
+    )
+    shutil.copy2(SOURCE / "go_cai_dat.py", runtime / "go_cai_dat.py")
+    return python
+
+
+def smoke_test(python: Path, runtime: Path) -> None:
+    run_python(python, "-c", "import simpleai, kanren, sympy", cwd=runtime, timeout=30)
+    request = json.dumps({
+        "text": '# @solve {"type":"coin_change","amount":17,"denominations":[4,7,9],"algorithm":"bfs"}',
+        "mode": "instant",
+        "verify": False,
+    })
+    reply = json.loads(run_python(
+        python,
+        str(runtime / "core_engine" / "cli_entry.py"),
+        "--mode", "instant",
+        cwd=runtime, timeout=30, input_text=request,
+    ))
+    if (
+        reply.get("tier_used") != "offline_coin_change"
+        or reply.get("validation_status") != "verified"
+        or not reply.get("code")
+    ):
+        raise RuntimeError("Kiem tra offline khong tao duoc loi giai da xac minh.")
+
+
+def install_all(ide_cli: Path | None, bootstrap: Path) -> None:
+    root = install_root()
+    with install_lock(root):
+        root.mkdir(exist_ok=True)
+        previous = load_runtime(root) or {}
+        if (root / "shells" / "stealth_daemon" / "daemon.pyw").exists():
+            stop_daemon_processes()
+        runtime = Path(tempfile.mkdtemp(prefix="runtime-", dir=root))
+        installed = False
+        try:
+            print(f"Dang tao moi truong Python rieng tai {runtime}", flush=True)
+            python = prepare_engine(runtime, bootstrap)
+            smoke_test(python, runtime)
+
+            pkg = json.loads((SOURCE / "shells" / "vscode_ext" / "package.json").read_text(encoding="utf-8"))
+            extension_id = f"{pkg['publisher']}.{pkg['name']}"
+            vsix = build_vsix(runtime / f"{pkg['name']}-{pkg['version']}.vsix")
+            ides = previous.get("ides", [])
+            if ide_cli is not None:
+                print(f"Dang cai extension qua {ide_cli}...", flush=True)
+                run_ide_cli(ide_cli, "--install-extension", str(vsix), "--force")
+                installed_version = f"{extension_id}@{pkg['version']}".casefold()
+                if installed_version not in list_extensions(ide_cli, show_versions=True):
+                    raise RuntimeError(f"IDE chua nhan extension {installed_version} sau khi cai.")
+                current = {"cli": str(ide_cli), "extension": extension_id}
+                ides = [entry for entry in ides if entry["cli"].casefold() != str(ide_cli).casefold()]
+                ides.append(current)
+
+            config = {
+                "engineRoot": str(runtime),
+                "python": str(python),
+                "uninstallPython": str(bootstrap),
+                "ides": ides,
+                "manualExtension": ide_cli is None or previous.get("manualExtension", False),
+            }
+            config_staging = runtime / "runtime.json"
+            config_staging.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+            config_staging.replace(root / "runtime.json")
+            installed = True
+            (root / ".uninstalling").unlink(missing_ok=True)
+        finally:
+            if not installed:
+                _remove_tree(runtime, root)
+
+        for obsolete in root.glob("runtime-*"):
+            if obsolete != runtime and obsolete.is_dir() and (obsolete / ".venv" / "pyvenv.cfg").is_file():
+                try:
+                    _remove_tree(obsolete, root)
+                except OSError as exc:
+                    print(f"[CANH BAO] Khong xoa duoc ban cu {obsolete.name}. {exc}")
+
+        print("[OK] Python va che do offline da duoc kiem tra.")
+        if ide_cli is None:
+            print(f"Cai extension trong IDE qua Extensions > Install from VSIX: {vsix}")
+        print("Neu IDE dang mo, dung Reload Window de nap ban moi.")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ide", choices=("auto", *IDE_NAMES, "manual"), default="auto")
+    parser.add_argument("--ide-cli", type=Path, help="Duong dan day du den CLI cua IDE.")
+    parser.add_argument("--check", action="store_true", help="Kiem tra Python, goi offline va CLI.")
+    args = parser.parse_args()
     try:
-        manifest_file.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def install_all() -> None:
-    src_root = Path(__file__).resolve().parent
-    py_exe = find_real_python()
-    pyw_exe = py_exe.with_name("pythonw.exe")
-    if not pyw_exe.exists():
-        pyw_exe = py_exe
-
-    print(f"[1/4] Su dung Python: {py_exe}")
-    stop_existing_daemon()
-
-    # 1. Copy gon nhe core_engine & shells vao %LOCALAPPDATA%\Programs\PylanceHelper (~10 file, 0.02s)
-    dest_dir = Path(os.environ.get("LOCALAPPDATA", src_root)) / "Programs" / "PylanceHelper"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    for folder_name in ("core_engine", "shells"):
-        s_folder = src_root / folder_name
-        d_folder = dest_dir / folder_name
-        if d_folder.exists():
-            shutil.rmtree(d_folder, ignore_errors=True)
-        shutil.copytree(
-            s_folder,
-            d_folder,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-        )
-    if (src_root / "go_cai_dat.py").exists():
-        shutil.copy2(src_root / "go_cai_dat.py", dest_dir / "go_cai_dat.py")
-    (dest_dir / ".uninstalling").unlink(missing_ok=True)
-    print(f"[2/4] Da dong bo Core Engine vao: {dest_dir}")
-
-    # 2. Cai dat Extension truc tiep vao ca VS Code (.vscode) va Antigravity (.antigravity-ide)
-    src_ext_dir = src_root / "shells" / "vscode_ext"
-    for ide_dir_name in (".vscode", ".antigravity-ide"):
-        ide_ext_root = Path.home() / ide_dir_name / "extensions"
-        register_extension_in_ide(ide_ext_root, src_ext_dir)
-        print(f"[3/4] Da cai & kich hoat Extension tai: {ide_ext_root / EXT_FOLDER_NAME}")
-
-    # Dong goi lai file .vsix
-    build_vsix_script = src_root / "shells" / "vscode_ext" / "pack_vsix.py"
-    if build_vsix_script.exists():
-        try:
-            subprocess.run(
-                [str(py_exe), str(build_vsix_script)],
-                cwd=str(src_root),
-                capture_output=True,
-                check=False,
-            )
-        except Exception:
-            pass
-
-    # 3. Dang ky duong dan .pth cho offline_pkgs (khong can copy 1500 file sympy!)
-    offline_pkgs = (src_root / "setup_lab" / "offline_pkgs").resolve()
-    if offline_pkgs.exists():
-        try:
-            user_site = Path(site.getusersitepackages())
-            user_site.mkdir(parents=True, exist_ok=True)
-            pth_file = user_site / "pylance_helper_pkgs.pth"
-            pth_file.write_text(str(offline_pkgs) + "\n", encoding="utf-8")
-        except Exception:
-            pass
-
-    # 4. Khoi chay ngam Background Stealth Daemon bang pythonw.exe (Ctrl+Alt+1..4,0)
-    daemon_script = dest_dir / "shells" / "stealth_daemon" / "daemon.pyw"
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = (
-            getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-        )
-    subprocess.Popen(
-        [str(pyw_exe), str(daemon_script)],
-        cwd=tempfile.gettempdir(),
-        creationflags=creationflags,
-        close_fds=True,
-    )
-    print(f"[4/4] Da khoi chay ngam Stealth Daemon ({pyw_exe.name})!")
-    print("\n=== SETUP HOAN TAT (0.2s) - SAN SANG SU DUNG ALT+1 / ALT+2 / ALT+3 / ALT+4 / ALT+0 ===")
+        cli, python = check_install(args.ide, args.ide_cli)
+        if args.check:
+            print(f"[OK] Python {sys.version.split()[0]}: {python}")
+            print(f"[OK] Goi offline: {WHEELS}")
+            print(f"[OK] IDE: {cli or 'Cai VSIX tu menu Extensions'}")
+        else:
+            install_all(cli, python)
+    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"[LOI] Cai dat chua hoan tat. {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    install_all()
+    sys.exit(main())

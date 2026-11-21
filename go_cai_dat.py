@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Gỡ bản cài qua Alt+0, go_cai_dat.bat hoặc python go_cai_dat.py.
+"""Gỡ bản cài qua go_cai_dat.bat hoặc python go_cai_dat.py.
 
 Các IDE đang mở cần Reload Window để bỏ hẳn phím tắt đã nạp vào bộ nhớ.
 Extension mới sẽ tự ngừng xử lý ngay khi bản cài bị gỡ.
 """
 
-import ctypes
+from contextlib import contextmanager
 import json
 import os
 import shutil
@@ -18,6 +18,82 @@ from pathlib import Path
 
 EXT_ID = "ms-python-tools.pylance-indent-helper"
 EXT_FOLDER_NAME = EXT_ID + "-1.0.0"
+
+
+def install_root() -> Path:
+    local = os.getenv("LOCALAPPDATA")
+    if not local or not Path(local).is_absolute():
+        raise RuntimeError("Khong tim thay thu muc LOCALAPPDATA cua nguoi dung.")
+    parent = (Path(local) / "Programs").resolve()
+    root = parent / "PylanceHelper"
+    if root.resolve() != root:
+        raise RuntimeError(f"Thu muc cai dat tro sang dia chi khac: {root}")
+    return root
+
+
+@contextmanager
+def install_lock(root: Path):
+    root.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform != "win32":
+        yield
+        return
+    import msvcrt
+
+    with (root.parent / "PylanceHelper.lock").open("a+b") as lock:
+        lock.seek(0)
+        try:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            raise RuntimeError("Dang co mot lenh cai hoac go khac. Hay doi va thu lai.") from exc
+        try:
+            yield
+        finally:
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def load_runtime(root: Path) -> dict | None:
+    try:
+        config = json.loads((root / "runtime.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    if not isinstance(config, dict) or not isinstance(config.get("ides", []), list):
+        raise ValueError("runtime.json khong hop le.")
+    for ide in config.get("ides", []):
+        if not isinstance(ide, dict) or not isinstance(ide.get("cli"), str) or not isinstance(ide.get("extension"), str):
+            raise ValueError("runtime.json chua thong tin IDE khong hop le.")
+    return config
+
+
+def run_ide_cli(cli: Path, *args: str) -> str:
+    if not cli.is_absolute() or not cli.is_file():
+        raise RuntimeError(f"Khong tim thay lenh IDE: {cli}")
+    env = os.environ.copy()
+    if cli.suffix.lower() in (".cmd", ".bat"):
+        # cmd.exe needs an explicit command string. Passing arguments through
+        # environment expansion preserves literal paths with spaces or shell symbols.
+        variables = [f"PYLANCE_HELPER_IDE_{index}" for index in range(len(args) + 1)]
+        for variable, value in zip(variables, (str(cli), *args)):
+            if '"' in value:
+                raise ValueError("Duong dan IDE chua ky tu khong hop le.")
+            env[variable] = value
+        tokens = " ".join(f'"%{variable}%"' for variable in variables)
+        command = f'cmd.exe /d /v:off /s /c "{tokens}"'
+    else:
+        command = [str(cli), *args]
+    result = subprocess.run(
+        command, env=env, capture_output=True, encoding="utf-8", errors="replace",
+        timeout=45, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode:
+        detail = (result.stderr.strip() or result.stdout.strip())[-2000:]
+        raise RuntimeError(f"Lenh IDE thoat voi ma {result.returncode}. {detail}")
+    return result.stdout
+
+
+def list_extensions(cli: Path, show_versions: bool = False) -> set[str]:
+    args = ("--list-extensions", "--show-versions") if show_versions else ("--list-extensions",)
+    return {line.strip().casefold() for line in run_ide_cli(cli, *args).splitlines()}
 
 
 def _remove_tree(target: Path, parent: Path) -> None:
@@ -102,24 +178,7 @@ def stop_daemon_processes() -> None:
     print("[OK] Da dung daemon cua cong cu.")
 
 
-def _clear_clipboard() -> None:
-    if sys.platform != "win32":
-        return
-    user32 = ctypes.windll.user32
-    for _ in range(8):
-        if user32.OpenClipboard(None):
-            try:
-                if not user32.EmptyClipboard():
-                    raise OSError("Khong xoa duoc Clipboard")
-            finally:
-                user32.CloseClipboard()
-            return
-        time.sleep(0.02)
-    raise OSError("Clipboard dang bi khoa")
-
-
-def uninstall_everything(kill_self_process: bool = False) -> bool:
-    # Giữ tham số tương thích với daemon cũ; luôn bỏ qua PID của chính mình.
+def uninstall_legacy(root: Path) -> list[str]:
     errors = []
 
     def attempt(label, action):
@@ -129,22 +188,11 @@ def uninstall_everything(kill_self_process: bool = False) -> bool:
             errors.append(f"{label}: {exc}")
             print(f"[LOI] {errors[-1]}")
 
-    local_app = os.environ.get("LOCALAPPDATA")
-    install_root = Path(local_app) / "Programs" / "PylanceHelper" if local_app else None
-    if install_root and install_root.exists():
-        # Các cửa sổ IDE khác cũng ngừng lệnh khi thấy cờ này.
-        attempt("Khoa ban cai", lambda: (install_root / ".uninstalling").touch())
-        if Path.cwd().resolve() == install_root.resolve() or install_root.resolve() in Path.cwd().resolve().parents:
-            # Windows không cho xóa thư mục đang là cwd của chính tiến trình gỡ.
-            os.chdir(tempfile.gettempdir())
-
-    attempt("Dung daemon", stop_daemon_processes)
+    if root.exists():
+        attempt("Dung chuong trinh nen cu", stop_daemon_processes)
     for ide_name in (".vscode", ".antigravity-ide"):
         ext_root = Path.home() / ide_name / "extensions"
         attempt(f"Go extension {ide_name}", lambda root=ext_root: _unregister_extension_from_ide(root))
-
-    if install_root:
-        attempt("Xoa thu muc cai", lambda: _remove_tree(install_root, install_root.parent))
 
     def remove_pth():
         pth_file = Path(site.getusersitepackages()) / "pylance_helper_pkgs.pth"
@@ -152,14 +200,42 @@ def uninstall_everything(kill_self_process: bool = False) -> bool:
             pth_file.unlink()
 
     attempt("Xoa lien ket thu vien", remove_pth)
-    for tmp_file in Path(tempfile.gettempdir()).glob("pylance_lint_*.py"):
-        attempt(f"Xoa file tam {tmp_file.name}", tmp_file.unlink)
-    attempt("Xoa Clipboard", _clear_clipboard)
+    return errors
 
-    if errors:
-        print("\n=== GO CAI DAT CHUA HOAN TAT. XEM CAC LOI BEN TREN. ===")
+
+def uninstall_everything(kill_self_process: bool = False) -> bool:
+    # Legacy callers still pass kill_self_process. The PID check excludes this process.
+    manual_extension = False
+    try:
+        root = install_root()
+        with install_lock(root):
+            config = load_runtime(root)
+            if root.exists():
+                (root / ".uninstalling").touch()
+                cwd = Path.cwd().resolve()
+                if cwd == root or root in cwd.parents:
+                    os.chdir(tempfile.gettempdir())
+            if config is not None:
+                for ide in config.get("ides", []):
+                    cli = Path(ide["cli"])
+                    extension = ide["extension"]
+                    if extension.casefold() not in list_extensions(cli):
+                        continue
+                    run_ide_cli(cli, "--uninstall-extension", extension)
+                    if extension.casefold() in list_extensions(cli):
+                        raise RuntimeError(f"IDE van hien extension {extension}.")
+                manual_extension = config.get("manualExtension", False)
+            elif uninstall_legacy(root):
+                return False
+            _remove_tree(root, root.parent)
+    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"[LOI] Go cai dat chua hoan tat. {exc}", file=sys.stderr)
         return False
-    print("\n=== DA GO CAI DAT THANH CONG ===")
+    if manual_extension:
+        print("\n[OK] Da go moi truong Python cua cong cu.")
+        print("Neu tung cai VSIX thu cong, mo Extensions trong IDE va chon Uninstall.")
+    else:
+        print("\n=== DA GO CAI DAT THANH CONG ===")
     print("IDE dang mo: Ctrl+Shift+P > Reload Window de bo phim tat da nap trong bo nho.")
     return True
 

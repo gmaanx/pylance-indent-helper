@@ -322,10 +322,7 @@ def find_best_python_executable() -> str:
 
 
 def shadow_execute(code: str, timeout: float = 2.5) -> ShadowRunResult:
-    """
-    Ghi code ra file nháp trong `%TEMP%` và chạy ngầm với `CREATE_NO_WINDOW`.
-    Đảm bảo tuyệt đối không hiện bất kỳ cửa sổ đen nào trên màn hình phòng thi.
-    """
+    """Run trusted local test fixtures. This subprocess is not a sandbox."""
     py_exe = find_best_python_executable()
     fd, tmp_path = tempfile.mkstemp(prefix="pylance_lint_", suffix=".py")
     os.close(fd)
@@ -334,7 +331,8 @@ def shadow_execute(code: str, timeout: float = 2.5) -> ShadowRunResult:
     if sys.platform == "win32":
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
-    env = os.environ.copy()
+    required_env = {"path", "systemroot", "windir", "temp", "tmp"}
+    env = {name: value for name, value in os.environ.items() if name.lower() in required_env}
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
 

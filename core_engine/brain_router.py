@@ -1,68 +1,42 @@
-# -*- coding: utf-8 -*-
-"""
-Module 3: Bo Nao 3 Tang Tu Dong Chuyen Kenh (brain_router.py).
-- Tang 1: Cloud API (Gemini -> Groq -> DeepSeek -> OpenRouter -> OpenAI) voi Context Injection
-          (2 Phoi Vang BM25 sat nhat + Bang quy tac cung SimpleAI/miniKanren).
-- Tang 2: Local LLM (Ollama 11434 / llama-server 8080) neu may phong lab co bat server local.
-- Tang 3: Pure Offline BM25 RAG + Smart Parameter Extractor (Bat tu 100% khi cat mang).
-"""
+"""Request code suggestions from explicitly enabled model providers."""
 
 import json
 import re
-import socket
-import urllib.error
-import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .config_manager import CONFIG
-from .dual_parser import ParsedInput
-from .golden_skeletons import (
-    ALL_SKELETONS,
-    RETRIEVER,
-    SIMPLEAI_STRICT_RULES,
-    customize_skeleton_with_prompt,
+from .golden_skeletons import SIMPLEAI_STRICT_RULES
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_CLOUD_OPENER = build_opener(_NoRedirect())
+_LOCAL_OPENER = build_opener(ProxyHandler({}), _NoRedirect())
+_RESPONSE_LIMIT = 2_000_000
+_CLOUD_CONFIG = (
+    ("gemini", "https://generativelanguage.googleapis.com/v1beta/models/", "gemini-2.5-flash"),
+    ("groq", "https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile"),
+    ("deepseek", "https://api.deepseek.com/chat/completions", "deepseek-chat"),
+    ("openrouter", "https://openrouter.ai/api/v1/chat/completions", "qwen/qwen-2.5-coder-32b-instruct:free"),
+    ("openai", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini"),
 )
 
 
 def extract_python_code(raw_response: str) -> str:
-    """Bóc tách khối code Python sạch từ phản hồi của LLM."""
-    if not raw_response:
+    if not isinstance(raw_response, str) or not raw_response.strip():
         return ""
     text = raw_response.strip()
-    m_fence = re.search(r"```(?:python|py)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    if m_fence:
-        return m_fence.group(1).strip()
-    # Neu LLM khong dong fence hoac tra thang code
+    match = re.search(r"```(?:python|py)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
     text = re.sub(r"^```(?:python|py)?\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"```\s*$", "", text)
-    return text.strip()
-
-
-def _quick_tcp_check(host: str, port: int, timeout: float = 0.7) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def is_internet_alive(timeout: Optional[float] = None) -> bool:
-    t = timeout if timeout is not None else float(CONFIG.get("ping_timeout", 0.8))
-    for host, port in (("generativelanguage.googleapis.com", 443), ("1.1.1.1", 53), ("8.8.8.8", 53)):
-        if _quick_tcp_check(host, port, timeout=t):
-            return True
-    return False
-
-
-def is_local_server_alive() -> Optional[Tuple[str, str]]:
-    """
-    Kiểm tra cực nhanh (0.12s) xem máy có chạy Ollama (11434) hoặc llama-server (8080) không.
-    """
-    if _quick_tcp_check("127.0.0.1", 11434, timeout=0.12):
-        return ("ollama", CONFIG.get("local_llm_url", "http://127.0.0.1:11434/api/generate"))
-    if _quick_tcp_check("127.0.0.1", 8080, timeout=0.12):
-        return ("llamacpp", CONFIG.get("local_llama_cpp_url", "http://127.0.0.1:8080/completion"))
-    return None
+    return re.sub(r"```\s*$", "", text).strip()
 
 
 def build_context_injected_prompt(
@@ -71,275 +45,169 @@ def build_context_injected_prompt(
     existing_code: str = "",
     error_traceback: str = "",
 ) -> Tuple[str, str]:
-    """
-    Tạo cặp (system_prompt, user_message) kẹp 2 Phôi Vàng giống đề nhất + Quy tắc cứng SimpleAI.
-    """
-    skeleton_context = []
-    for idx, sk in enumerate(top_skeletons[:2], start=1):
-        skeleton_context.append(
-            f"=== PHOI VANG MAU #{idx}: {sk['title']} ===\n{sk['code']}\n"
-        )
-    joined_skeletons = "\n".join(skeleton_context)
-
     system_prompt = (
-        "Ban la tro ly giai bai thi thuc hanh mon Tri Tue Nhan Tao bang Python (thu vien simpleai, miniKanren, hoac cai chay).\n"
-        "NHIEM VU: Dua tren PHONG CACH CODE va CU PHAP CHUAN trong PHOI VANG MAU duoi day, hay viet code Python HOAN CHINH, "
-        "CHAY DUOC NGAY LAP TUC (returncode == 0) giai dung yeu cau va so lieu cua de bai.\n"
-        "CHI TRA VE DUY NHAT KHOI CODE PYTHON, KHONG GIAI THICH, KHONG VIET VAN BAN NGOAI CODE.\n\n"
-        f"{SIMPLEAI_STRICT_RULES}\n\n"
-        f"THAM KHAO 2 PHOI VANG CHUAN XAC 100% TREN LOP:\n{joined_skeletons}"
+        "Bạn là trợ lý viết chương trình Python. Hãy giữ nguyên toàn bộ dữ liệu, thuật toán, "
+        "định dạng đầu ra và các ràng buộc nêu trong yêu cầu. Nếu dùng mẫu tham khảo, bỏ dữ liệu "
+        "ví dụ và thay bằng dữ liệu của yêu cầu. Tránh giả định làm thay đổi bài toán. "
+        "Xử lý dữ liệu thiếu hoặc không có nghiệm rõ ràng. Chỉ trả về mã Python. "
+        "Áp dụng hướng dẫn SimpleAI và miniKanren dưới đây nếu dùng các thư viện đó.\n\n"
+        + SIMPLEAI_STRICT_RULES
     )
-
-    parts = [f"DE BAI / YEU CAU:\n{user_prompt}"]
-    if existing_code.strip():
-        parts.append(f"CODE KHUNG CO SAN TRONG FILE (giu nguyen hoac hoan thien):\n```python\n{existing_code}\n```")
-    if error_traceback.strip():
-        parts.append(
-            f"CODE TRUOC DO BI LOI TRACEBACK SAU, HAY SUA TRIET DE:\n{error_traceback}"
+    if top_skeletons:
+        examples = "\n\n".join(
+            f"Mẫu tham khảo {item['title']}\n{item['code']}" for item in top_skeletons[:2]
         )
-    parts.append("Chi xuat ra code Python hoan chinh:")
+        system_prompt += "\n\n" + examples
+    parts = [f"Yêu cầu:\n{user_prompt}"]
+    if existing_code.strip():
+        parts.append(f"Mã hiện tại:\n{existing_code}")
+    if error_traceback.strip():
+        parts.append(f"Chi tiết lỗi:\n{error_traceback}")
     return system_prompt, "\n\n".join(parts)
 
 
-def _call_gemini_api(system_prompt: str, user_msg: str, timeout: float) -> Optional[str]:
-    api_key = CONFIG.get_api_key("gemini")
-    if not api_key:
-        return None
-    model = CONFIG.get("gemini_model", "gemini-2.5-flash")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    payload = {
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"role": "user", "parts": [{"text": user_msg}]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096},
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+def _post_json(opener, url, payload, timeout, headers=None):
+    req = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-    candidates = body.get("candidates", [])
-    if candidates:
-        parts = candidates[0].get("content", {}).get("parts", [])
-        text = "".join(p.get("text", "") for p in parts)
-        return extract_python_code(text)
-    return None
+    with opener.open(req, timeout=timeout) as response:
+        message = response.read(_RESPONSE_LIMIT + 1)
+    if len(message) > _RESPONSE_LIMIT:
+        raise ValueError("Provider response exceeds size limit")
+    body = json.loads(message)
+    if not isinstance(body, dict):
+        raise ValueError("Unexpected provider response")
+    return body
 
 
-def _call_openai_compatible_api(
-    provider: str,
-    endpoint_url: str,
-    model_name: str,
-    system_prompt: str,
-    user_msg: str,
-    timeout: float,
-) -> Optional[str]:
-    api_key = CONFIG.get_api_key(provider)
-    if not api_key:
-        return None
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_msg},
-        ],
-        "temperature": 0.1,
-        "max_tokens": 4096,
-    }
-    data = json.dumps(payload).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": "PylanceIndentHelper/1.0",
-    }
-    req = urllib.request.Request(endpoint_url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-    choices = body.get("choices", [])
-    if choices:
-        content = choices[0].get("message", {}).get("content", "")
-        return extract_python_code(content)
-    return None
+def _request_cloud(provider, endpoint, model, key, system_prompt, user_message, timeout):
+    if provider == "gemini":
+        body = _post_json(
+            _CLOUD_OPENER,
+            f"{endpoint}{quote(model, safe='')}:generateContent",
+            {
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 8192},
+            },
+            timeout,
+            {"x-goog-api-key": key},
+        )
+        candidates = body.get("candidates") or []
+        if not candidates or candidates[0].get("finishReason") in ("MAX_TOKENS", "SAFETY"):
+            return ""
+        parts = candidates[0].get("content", {}).get("parts") or []
+        return "".join(part.get("text", "") for part in parts if not part.get("thought"))
+
+    body = _post_json(
+        _CLOUD_OPENER,
+        endpoint,
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "max_tokens": 8192,
+        },
+        timeout,
+        {"Authorization": f"Bearer {key}", "User-Agent": "PythonPracticeHelper/2.0"},
+    )
+    choices = body.get("choices") or []
+    if not choices or choices[0].get("finish_reason") in ("length", "content_filter"):
+        return ""
+    return choices[0].get("message", {}).get("content", "")
+
+
+def _provider_error(provider, exc):
+    if isinstance(exc, HTTPError):
+        detail = {
+            400: "yêu cầu hoặc model không được hỗ trợ",
+            401: "API key bị từ chối",
+            403: "không có quyền gọi model",
+            404: "không tìm thấy model hoặc API",
+            429: "đã chạm hạn mức",
+        }.get(exc.code, "lỗi từ máy chủ")
+        return f"{provider}: HTTP {exc.code}, {detail}."
+    if isinstance(exc, (URLError, TimeoutError, OSError)):
+        return f"{provider} không kết nối được hoặc hết thời gian chờ."
+    return f"{provider} trả về dữ liệu sai định dạng."
 
 
 def call_tier1_cloud_llm(
     system_prompt: str,
     user_msg: str,
+    *,
+    diagnostics: Optional[List[str]] = None,
+    provider_id: Optional[str] = None,
+    max_attempts: Optional[int] = None,
+    raw_response: bool = False,
 ) -> Optional[Tuple[str, str]]:
-    """
-    Thử lần lượt các nhà cung cấp Cloud API đã cấu hình Key (Gemini -> Groq -> DeepSeek -> OpenRouter -> OpenAI).
-    Trả về (code, ten_kenh) nếu thành công, hoặc None.
-    """
-    has_any_key = any(
-        CONFIG.get_api_key(p) for p in ("gemini", "groq", "deepseek", "openrouter", "openai")
-    )
-    if not has_any_key:
-        return None
-
-    if not is_internet_alive():
-        return None
-
+    messages = diagnostics if diagnostics is not None else []
     timeout = float(CONFIG.get("cloud_timeout", 8.0))
-
-    # 1. Gemini API
-    if CONFIG.get_api_key("gemini"):
+    attempts = 0
+    for provider, endpoint, default_model in _CLOUD_CONFIG:
+        if max_attempts is not None and attempts >= max_attempts:
+            break
+        if provider_id is not None and provider_id != provider:
+            continue
+        key = CONFIG.get_api_key(provider)
+        if not key:
+            continue
+        attempts += 1
+        model = CONFIG.get(f"{provider}_model", default_model)
         try:
-            code = _call_gemini_api(system_prompt, user_msg, timeout=timeout)
-            if code:
-                return code, "tier1_gemini"
-        except Exception:
-            pass
-
-    # 2. Groq / DeepSeek / OpenRouter / OpenAI
-    providers = [
-        ("groq", "https://api.groq.com/openai/v1/chat/completions", CONFIG.get("groq_model", "llama-3.3-70b-versatile")),
-        ("deepseek", "https://api.deepseek.com/chat/completions", CONFIG.get("deepseek_model", "deepseek-chat")),
-        ("openrouter", "https://openrouter.ai/api/v1/chat/completions", CONFIG.get("openrouter_model", "qwen/qwen-2.5-coder-32b-instruct:free")),
-        ("openai", "https://api.openai.com/v1/chat/completions", CONFIG.get("openai_model", "gpt-4o-mini")),
-    ]
-    for prov, url, model in providers:
-        if CONFIG.get_api_key(prov):
-            try:
-                code = _call_openai_compatible_api(prov, url, model, system_prompt, user_msg, timeout=timeout)
-                if code:
-                    return code, f"tier1_{prov}"
-            except Exception:
-                continue
-
+            result = _request_cloud(provider, endpoint, model, key, system_prompt, user_msg, timeout)
+        except (OSError, ValueError, TypeError, AttributeError, KeyError, RecursionError) as exc:
+            messages.append(_provider_error(provider, exc))
+            continue
+        if isinstance(result, str):
+            result = result.strip() if raw_response else extract_python_code(result)
+        if result and isinstance(result, str):
+            return result, f"tier1_{provider}"
+        messages.append(f"{provider} không trả về dữ liệu hoàn chỉnh.")
+    if not attempts:
+        messages.append("Chưa có API key cho phiên Cloud này.")
     return None
 
 
 def call_tier2_local_llm(
     user_prompt: str,
-    best_skeleton: Dict[str, Any],
+    best_skeleton: Optional[Dict[str, Any]],
     existing_code: str = "",
+    *,
+    diagnostics: Optional[List[str]] = None,
 ) -> Optional[Tuple[str, str]]:
-    """
-    Tầng 2: Local LLM (Ollama hoặc llama.cpp server).
-    Sử dụng kỹ thuật neo chặt vào Phôi Vàng gần nhất để model nhỏ 1.5B/3B sinh code trong 2-4s.
-    """
-    server_info = is_local_server_alive()
-    if not server_info:
-        return None
-
-    kind, url = server_info
+    messages = diagnostics if diagnostics is not None else []
+    system_prompt, user_msg = build_context_injected_prompt(
+        user_prompt, [best_skeleton] if best_skeleton else [], existing_code,
+    )
+    prompt = system_prompt + "\n\n" + user_msg
     timeout = float(CONFIG.get("local_timeout", 4.5))
-    compact_prompt = (
-        f"{SIMPLEAI_STRICT_RULES}\n\n"
-        f"PHOI VANG GOC:\n```python\n{best_skeleton['code']}\n```\n\n"
-        f"DE BAI MOI:\n{user_prompt}\n"
+    configs = (
+        ("ollama", "http://127.0.0.1:11434/api/generate", "response", {
+            "model": CONFIG.get("local_model", "qwen2.5-coder:1.5b"),
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.1, "num_predict": 4096},
+        }),
+        ("llamacpp", "http://127.0.0.1:8080/completion", "content", {
+            "prompt": prompt,
+            "temperature": 0.1,
+            "n_predict": 4096,
+        }),
     )
-    if existing_code.strip():
-        compact_prompt += f"\nCODE KHUNG:\n```python\n{existing_code}\n```\n"
-    compact_prompt += "\nHay chinh sua so lieu/ham trong PHOI VANG GOC de giai dung DE BAI MOI. Chi tra ve code Python:"
-
-    try:
-        if kind == "ollama":
-            payload = {
-                "model": CONFIG.get("local_model", "qwen2.5-coder:1.5b"),
-                "prompt": compact_prompt,
-                "stream": False,
-                "options": {"temperature": 0.1},
-            }
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-            code = extract_python_code(body.get("response", ""))
-            if code:
-                return code, "tier2_ollama"
-        else:
-            payload = {
-                "prompt": compact_prompt,
-                "temperature": 0.1,
-                "n_predict": 2048,
-            }
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-            code = extract_python_code(body.get("content", ""))
-            if code:
-                return code, "tier2_llamacpp"
-    except Exception:
-        pass
+    for provider, endpoint, response_key, payload in configs:
+        try:
+            body = _post_json(_LOCAL_OPENER, endpoint, payload, timeout)
+        except (OSError, ValueError, RecursionError) as exc:
+            messages.append(_provider_error(provider, exc))
+            continue
+        code = extract_python_code(body.get(response_key, ""))
+        if code and body.get("done_reason") != "length" and not body.get("truncated"):
+            return code, f"tier2_{provider}"
+        messages.append(f"{provider} không trả về mã hoàn chỉnh.")
     return None
-
-
-def call_tier3_offline_rag(parsed: ParsedInput) -> Tuple[str, str, Dict[str, Any]]:
-    """
-    Tầng 3: 100% Offline BM25 RAG + Parameter Injector (< 0.01s).
-    Đảm bảo bất tử trong mọi hoàn cảnh cắt mạng / không có API key.
-    """
-    if parsed.target_skeleton_id and parsed.target_skeleton_id in ALL_SKELETONS:
-        best_sk = ALL_SKELETONS[parsed.target_skeleton_id]
-    else:
-        search_q = parsed.prompt_text.strip()
-        if not search_q and parsed.existing_code:
-            search_q = parsed.existing_code.strip()
-        candidates = RETRIEVER.retrieve(
-            search_q,
-            top_k=1,
-            category_filter=parsed.category,
-        )
-        if not candidates:
-            candidates = RETRIEVER.retrieve(search_q, top_k=1)
-        best_sk = candidates[0]
-
-    prompt_for_customizer = parsed.prompt_text.strip() or parsed.raw_input
-    customized_code = customize_skeleton_with_prompt(
-        skeleton_id=best_sk["id"],
-        code=best_sk["code"],
-        raw_prompt=prompt_for_customizer,
-        dsl_params=parsed.dsl_params,
-    )
-    return customized_code, f"tier3_offline({best_sk['id']})", best_sk
-
-
-def route_and_generate(
-    parsed: ParsedInput,
-    prefer_offline_only: bool = False,
-    error_traceback: str = "",
-) -> Tuple[str, str, Dict[str, Any]]:
-    """
-    Điều phối sinh code qua 3 tầng:
-    - Nếu `prefer_offline_only=True` (Alt+1 hoặc mode DSL): trả kết quả tức thì từ Tầng 3 (< 0.01s).
-    - Nếu `prefer_offline_only=False` (Alt+2 / Alt+3): thử Tầng 1 (Cloud) -> Tầng 2 (Local) -> Tầng 3 (Offline RAG).
-    Trả về `(code, source_tier, fallback_skeleton)`.
-    """
-    search_q = parsed.prompt_text.strip() or parsed.existing_code.strip()
-    top_skeletons = RETRIEVER.retrieve(search_q, top_k=2, category_filter=parsed.category)
-    if not top_skeletons:
-        top_skeletons = RETRIEVER.retrieve(search_q, top_k=2)
-
-    offline_code, offline_tag, best_sk = call_tier3_offline_rag(parsed)
-
-    if prefer_offline_only or parsed.mode == "dsl":
-        return offline_code, offline_tag, best_sk
-
-    # Tang 1: Cloud LLM voi Context Injection
-    sys_prompt, usr_msg = build_context_injected_prompt(
-        user_prompt=parsed.prompt_text,
-        top_skeletons=top_skeletons,
-        existing_code=parsed.existing_code,
-        error_traceback=error_traceback,
-    )
-    t1_res = call_tier1_cloud_llm(sys_prompt, usr_msg)
-    if t1_res is not None:
-        return t1_res[0], t1_res[1], best_sk
-
-    # Tang 2: Local LLM
-    t2_res = call_tier2_local_llm(parsed.prompt_text, best_sk, parsed.existing_code)
-    if t2_res is not None:
-        return t2_res[0], t2_res[1], best_sk
-
-    # Tang 3: Pure Offline RAG + Parameter Injector
-    return offline_code, offline_tag, best_sk

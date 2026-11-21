@@ -1,76 +1,88 @@
 {
   "name": "pylance-indent-helper",
-  "displayName": "Pylance Indent & Docstring Helper",
-  "description": "Lightweight Python indentation and docstring formatting assistant for Pylance.",
-  "version": "1.0.0",
+  "displayName": "Trợ lý bài tập Python",
+  "description": "Giải bài tập Python được hỗ trợ offline và xem trước đề xuất sửa code.",
+  "version": "1.3.0",
   "publisher": "ms-python-tools",
   "engines": {
     "vscode": "^1.75.0"
   },
   "categories": [
-    "Formatters",
-    "Linters"
+    "Education"
   ],
-  "activationEvents": [
-    "*"
+  "extensionKind": [
+    "ui"
   ],
   "main": "./src/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "pylanceIndentHelper.instantFormat",
-        "title": "Pylance Helper: Quick Format Block (Alt+1)"
+        "title": "Giải bài offline",
+        "category": "Bài tập Python"
       },
       {
         "command": "pylanceIndentHelper.deepFormat",
-        "title": "Pylance Helper: Deep Analyze & Format (Alt+2)"
+        "title": "Phân tích bài offline",
+        "category": "Bài tập Python"
       },
       {
         "command": "pylanceIndentHelper.ghostMode",
-        "title": "Pylance Helper: Auto Typewriter Stream (Alt+3)"
+        "title": "Gửi yêu cầu đến Cloud",
+        "category": "Bài tập Python"
       },
       {
         "command": "pylanceIndentHelper.silentFix",
-        "title": "Pylance Helper: Normalize & Self-Fix Syntax (Alt+4)"
+        "title": "Kiểm tra và đề xuất sửa Python offline",
+        "category": "Bài tập Python"
       },
       {
         "command": "pylanceIndentHelper.uninstallAll",
-        "title": "Pylance Helper: Clean & Uninstall All (Alt+0)"
+        "title": "Gỡ cài đặt",
+        "category": "Bài tập Python"
       },
       {
         "command": "pylanceIndentHelper.cancelGhost",
-        "title": "Pylance Helper: Stop Typewriter Stream (Esc)"
+        "title": "Hủy yêu cầu đang chạy",
+        "category": "Bài tập Python",
+        "enablement": "pylanceIndentHelper.running"
+      },
+      {
+        "command": "pylanceIndentHelper.forgetSessionKeys",
+        "title": "Quên API key phiên này",
+        "category": "Bài tập Python"
       }
     ],
     "keybindings": [
       {
         "command": "pylanceIndentHelper.instantFormat",
-        "key": "alt+1"
+        "key": "alt+1",
+        "when": "editorTextFocus && editorLangId == python && !editorReadonly && !inDiffEditor"
       },
       {
         "command": "pylanceIndentHelper.deepFormat",
-        "key": "alt+2"
+        "key": "alt+2",
+        "when": "editorTextFocus && editorLangId == python && !editorReadonly && !inDiffEditor"
       },
       {
         "command": "pylanceIndentHelper.ghostMode",
-        "key": "alt+3"
+        "key": "alt+3",
+        "when": "editorTextFocus && editorLangId == python && !editorReadonly && !inDiffEditor"
       },
       {
         "command": "pylanceIndentHelper.silentFix",
-        "key": "alt+4"
+        "key": "alt+4",
+        "when": "editorTextFocus && editorLangId == python && !editorReadonly && !inDiffEditor"
       },
       {
         "command": "pylanceIndentHelper.uninstallAll",
-        "key": "alt+0"
-      },
-      {
-        "command": "pylanceIndentHelper.uninstallAll",
-        "key": "alt+shift+delete"
+        "key": "alt+0",
+        "when": "editorTextFocus && editorLangId == python && !inDiffEditor"
       },
       {
         "command": "pylanceIndentHelper.cancelGhost",
         "key": "escape",
-        "when": "editorTextFocus"
+        "when": "editorTextFocus && editorLangId == python && pylanceIndentHelper.running"
       }
     ]
   }

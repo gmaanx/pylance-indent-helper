@@ -2,7 +2,6 @@
 
 import contextlib
 import io
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -49,14 +48,13 @@ class UninstallTests(unittest.TestCase):
             patch.object(uninstall.site, "getusersitepackages", return_value=str(self.user_site)),
             patch.object(uninstall.tempfile, "gettempdir", return_value=str(self.tmp)),
             patch.object(uninstall, "stop_daemon_processes"),
-            patch.object(uninstall, "_clear_clipboard"),
         ):
             mock.start()
             self.addCleanup(mock.stop)
 
     def run_uninstall(self):
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             result = uninstall.uninstall_everything()
         return result, output.getvalue()
 
@@ -65,7 +63,7 @@ class UninstallTests(unittest.TestCase):
         self.assertTrue(result, output)
         self.assertFalse(self.install.exists())
         self.assertFalse((self.user_site / "pylance_helper_pkgs.pth").exists())
-        self.assertFalse((self.tmp / "pylance_lint_test.py").exists())
+        self.assertTrue((self.tmp / "pylance_lint_test.py").exists())
         self.assertTrue((self.tmp / "keep.py").exists())
         for ide in (".vscode", ".antigravity-ide"):
             ext_root = self.profile / ide / "extensions"
@@ -104,20 +102,42 @@ class UninstallTests(unittest.TestCase):
         finally:
             os.chdir(original_cwd)
 
-    def test_reinstall_clears_stop_marker_and_launches_installed_daemon(self):
-        (self.install / ".uninstalling").touch()
-        spec = importlib.util.spec_from_file_location("tool_setup", Path(uninstall.__file__).with_name("setup.py"))
-        installer = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(installer)
-        with patch.object(installer.subprocess, "Popen") as popen, \
-                patch.object(installer.subprocess, "run"), \
-                contextlib.redirect_stdout(io.StringIO()):
-            installer.install_all()
-        self.assertFalse((self.install / ".uninstalling").exists())
-        self.assertTrue((self.install / "go_cai_dat.py").exists())
-        args, kwargs = popen.call_args
-        self.assertEqual(Path(args[0][1]), self.install / "shells" / "stealth_daemon" / "daemon.pyw")
-        self.assertEqual(kwargs["cwd"], str(self.tmp))
+    def test_modern_uninstall_uses_ide_cli_and_preserves_unrelated_settings(self):
+        cli = self.root / "code.cmd"
+        (self.install / "runtime.json").write_text(json.dumps({
+            "ides": [{"cli": str(cli), "extension": uninstall.EXT_ID}]
+        }), encoding="utf-8")
+        with patch.object(uninstall, "list_extensions", side_effect=[{uninstall.EXT_ID}, set()]), \
+                patch.object(uninstall, "run_ide_cli") as command:
+            result, output = self.run_uninstall()
+        self.assertTrue(result, output)
+        command.assert_called_once_with(cli, "--uninstall-extension", uninstall.EXT_ID)
+        self.assertFalse(self.install.exists())
+        self.assertTrue((self.user_site / "pylance_helper_pkgs.pth").exists())
+        uninstall.stop_daemon_processes.assert_not_called()
+
+    def test_ide_uninstall_failure_keeps_runtime_for_retry(self):
+        cli = self.root / "code.cmd"
+        (self.install / "runtime.json").write_text(json.dumps({
+            "ides": [{"cli": str(cli), "extension": uninstall.EXT_ID}]
+        }), encoding="utf-8")
+        with patch.object(uninstall, "list_extensions", return_value={uninstall.EXT_ID}), \
+                patch.object(uninstall, "run_ide_cli", side_effect=RuntimeError("IDE access denied")):
+            result, output = self.run_uninstall()
+        self.assertFalse(result)
+        self.assertIn("IDE access denied", output)
+        self.assertTrue((self.install / "runtime.json").exists())
+        self.assertTrue((self.install / ".uninstalling").exists())
+
+    def test_manual_uninstall_reports_the_remaining_extension_step(self):
+        (self.install / "runtime.json").write_text(json.dumps({
+            "manualExtension": True,
+        }), encoding="utf-8")
+        result, output = self.run_uninstall()
+        self.assertTrue(result, output)
+        self.assertFalse(self.install.exists())
+        self.assertIn("mo Extensions trong IDE va chon Uninstall", output)
+        self.assertNotIn("DA GO CAI DAT THANH CONG", output)
 
 
 class DaemonProcessTests(unittest.TestCase):

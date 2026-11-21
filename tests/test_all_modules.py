@@ -143,10 +143,11 @@ def test_copy_paste_exam_comments() -> None:
 
     for prompt, expected_sid, expected_snippet in exam_prompts:
         resp = process_request(prompt, action_mode="instant", verify_shadow=True)
-        assert resp.verified_ok, f"[FAIL] Prompt failed verification: {prompt}\nErr: {resp.error_detail}"
+        assert resp.validation_status == "reference", f"[FAIL] Expected a reference: {prompt}\nErr: {resp.error_detail}"
+        assert not resp.verified_ok
         assert expected_sid in resp.tier_used, f"[FAIL] Expected {expected_sid}, got {resp.tier_used}"
         assert expected_snippet in resp.code, f"[FAIL] Expected '{expected_snippet}' in generated code for {expected_sid}"
-        print(f"  [OK] Copy-Paste -> {resp.tier_used:<38} | Verified in {resp.elapsed_sec*1000:5.1f} ms")
+        print(f"  [OK] Copy-Paste -> {resp.tier_used:<38} | Reference in {resp.elapsed_sec*1000:5.1f} ms")
 
 
 def test_static_ast_auto_healer_traps() -> None:
@@ -219,8 +220,11 @@ if __name__ == '__main__':
     print("CSP:", kq)
 """
     resp_fix = process_request(buggy_csp_code, action_mode="self_fix")
-    assert resp_fix.verified_ok, f"Trap 2 CSP heal failed: {resp_fix.error_detail}"
-    print(f"  [OK] Bay 2 (CSP constraint def f(a, b) -> def f(variables, values)) -> {resp_fix.stdout_preview}")
+    assert resp_fix.validation_status == "syntax_checked", f"Trap 2 CSP heal failed: {resp_fix.error_detail}"
+    assert not resp_fix.verified_ok
+    run_fix = shadow_execute(resp_fix.code)
+    assert run_fix.ok, run_fix.stderr
+    print(f"  [OK] Bay 2 (CSP constraint def f(a, b) -> def f(variables, values)) -> {run_fix.summary}")
 
 
 def test_stealth_config_and_cli() -> None:
@@ -250,7 +254,8 @@ def test_stealth_config_and_cli() -> None:
     assert proc.returncode == 0, f"CLI Entrypoint failed: {proc.stderr}"
     data = json.loads(proc.stdout)
     assert data["verified_ok"] is True
-    assert "DongNuocProblem" in data["code"]
+    assert data["validation_status"] == "verified"
+    assert data["tier_used"] == "offline_water_jugs"
     print(f"  [OK] CLI Entrypoint JSON response verified ({data['elapsed_sec']}s)")
 
 
@@ -262,18 +267,17 @@ def test_triple_quotes_across_all_alt_modes() -> None:
         '"""'
     )
     for mode, expected_header in (
-        ("instant", "# [Alt+1 OK"),
-        ("full", "# [Alt+2 OK"),
-        ("ghost", "# [Alt+3 OK"),
-        ("self_fix", "# [Alt+4 OK"),
+        ("instant", "# [Alt+1 |"),
+        ("full", "# [Alt+2 |"),
+        ("ghost", "# [Alt+3 |"),
+        ("self_fix", "# [Alt+4 |"),
     ):
         res = process_request(triple_prompt, action_mode=mode, verify_shadow=True)
         assert res.verified_ok, f"Failed triple-quote on {mode}: {res.error_detail}"
         first_line = res.code.splitlines()[0]
-        last_line = res.code.splitlines()[-1]
         assert first_line.startswith(expected_header), f"Expected {expected_header}, got {first_line}"
-        assert "DongNuocProblem" in res.code
-        print(f"  [OK] {mode:<10} -> {first_line} | {last_line}")
+        assert res.tier_used == "offline_water_jugs"
+        print(f"  [OK] {mode:<10} -> {res.tier_used} | {res.validation_status}")
 
 
 if __name__ == "__main__":

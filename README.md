@@ -1,232 +1,189 @@
-# Pylance Indent Helper
+﻿# Trợ lý bài tập Python
 
-Tiện ích Python trên Windows để tạo code từ yêu cầu, thử chạy và hỗ trợ sửa lỗi ngay trong VS Code hoặc Antigravity. Có chế độ offline dùng kho mẫu và chế độ gọi AI qua API. Với IDLE / Notepad++, chương trình nền cung cấp bộ phím tắt riêng.
+Tiện ích Windows hỗ trợ luyện bài Python trong VS Code hoặc Antigravity. Bộ giải offline hỗ trợ 21 dạng tìm kiếm, logic, tối ưu và học máy có đặc tả. Với yêu cầu khác, tool có thể đưa ra mẫu tham khảo hoặc gửi yêu cầu đến nhà cung cấp Cloud do bạn chọn. Trong bài thi, dùng các chế độ mà quy chế cho phép.
 
-## 1. Cài đặt lần đầu
+## Cài đặt offline
 
-### Chuẩn bị
-
-- Windows, Python **3.10 trở lên** và VS Code hoặc Antigravity.
-- Khi cài Python từ [python.org](https://www.python.org/downloads/windows/), bật **Add Python to PATH**.
-- Internet và API key chỉ cần cho chế độ Cloud. Bạn có thể dùng `Alt+1` khi chưa có key.
-
-Mở PowerShell để kiểm tra:
+1. Chuẩn bị Python 3.10 trở lên và VS Code hoặc Antigravity.
+2. Giải nén gói Windows vào thư mục có thể ghi, rồi chạy [setup_nhanh.bat](setup_nhanh.bat). Nếu chạy từ mã nguồn, mở PowerShell trong thư mục repo và dùng lệnh bên dưới.
+3. Trong IDE đang mở, bấm **Ctrl+Shift+P → Reload Window**. Mở file Python và thử một ví dụ ở phần dưới.
 
 ```powershell
-python --version
+py -3 setup.py
 ```
 
-### Tải và cài
-
-**Có Git:**
+Nếu máy có lệnh `python` trỏ đúng phiên bản, có thể dùng `python setup.py`. Trình cài chọn IDE có sẵn, tạo môi trường Python riêng, dùng các wheel đi kèm và kiểm tra chức năng trước khi báo hoàn tất. Có thể chỉ định IDE hoặc kiểm tra điều kiện cài trước.
 
 ```powershell
-git clone https://github.com/gmaanx/pylance-indent-helper.git
-cd pylance-indent-helper
+py -3 setup.py --check
+py -3 setup.py --ide vscode
+py -3 setup.py --ide antigravity
 ```
 
-**Không có Git:** trên trang repo, chọn **Code → Download ZIP**, giải nén, rồi mở PowerShell trong thư mục có `setup.py`.
+Nếu IDE không có CLI, chạy `py -3 setup.py --ide manual`, sau đó chọn **Extensions → Install from VSIX** và mở file VSIX mà trình cài in ra.
 
-Cài các thư viện vào Python bạn sẽ dùng. Repo có sẵn wheel để cài không cần tải thêm:
+Người đóng gói có thể tạo ZIP cài đặt bằng `py -3 setup_lab/build_release.py`. Gói nằm trong `dist/` và chứa một bộ wheel, mã runtime, extension và các script cần dùng.
 
-```powershell
-python -m pip install --no-index --find-links .\setup_lab\wheels simpleai miniKanren sympy
-```
+## Dùng trong IDE
 
-Nếu dùng môi trường ảo, hãy dùng Python trong môi trường đó cho cả bước cài thư viện và bước chạy setup. Trình cài ưu tiên môi trường `.venv` nằm cạnh thư mục repo nếu có.
+Viết yêu cầu trong một file `.py`. Để xử lý riêng một đoạn, bôi đen đoạn đó trước khi chạy lệnh. Tool mở cửa sổ so sánh, trong đó bạn có thể xem dữ liệu, kết quả và thay đổi dự kiến. Chọn **Áp dụng** khi đã kiểm tra. Nếu tài liệu thay đổi trong lúc xử lý, chạy lại lệnh trên bản mới.
 
-Tiếp theo, nhấp đúp [setup_nhanh.bat](setup_nhanh.bat), hoặc chạy:
+| Phím | Lệnh |
+| --- | --- |
+| `Alt+1` | Giải offline từ yêu cầu hoặc dữ liệu có cấu trúc |
+| `Alt+2` | Phân tích offline |
+| `Alt+3` | Chọn nhà cung cấp và xác nhận yêu cầu Cloud |
+| `Alt+4` | Xem đề xuất sửa code offline |
+| `Alt+0` | Mở xác nhận gỡ công cụ |
 
-```powershell
-python setup.py
-```
+Có thể tìm các lệnh trong **Ctrl+Shift+P**. Lệnh hủy hiện ở thông báo tiến độ khi đang xử lý. Bản cài dành cho IDE và các phím tạo code hoạt động khi đang soạn Python.
 
-Trong **từng cửa sổ VS Code / Antigravity đang mở**, bấm **Ctrl+Shift+P → Reload Window → Enter**. Mở một file `.py` để thử phím tắt.
+## Dùng bộ giải offline
 
-Trình cài chép bộ xử lý vào `%LOCALAPPDATA%\Programs\PylanceHelper`, cài extension cho cả hai IDE và khởi chạy chương trình nền. Giữ thư mục repo ở vị trí đã cài vì liên kết thư viện offline có thể trỏ về `setup_lab/offline_pkgs`. Nếu chuyển thư mục, chạy setup lại.
+Bộ giải đọc những câu mô tả đơn giản mà nó nhận diện được. Với dữ liệu dài hoặc cần kết quả có thể kiểm tra, viết một dòng comment `# @solve` chứa JSON. Đặt trong file riêng hoặc bôi đen đúng dòng đó trước khi chạy `Alt+1`.
 
-## 2. Sử dụng hằng ngày
+### Đong nước
 
-1. Mở file `.py` và lưu bản sao nếu file đang có nội dung cần giữ.
-2. Viết yêu cầu bằng comment `#` hoặc chuỗi ba dấu nháy. Không cần bôi đen để xử lý cả file.
-3. Chọn phím tắt ở bảng bên dưới. Kết quả sẽ thay thế nội dung file; có thể dùng **Ctrl+Z** để hoàn tác trong IDE.
-
-Ví dụ thử offline:
+Mặc định, mỗi lần rót tới khi bình nguồn cạn hoặc bình đích đầy. Dùng `max_pour` nếu mỗi bước được chọn số lít từ 1 đến mức giới hạn. Dùng `blocked_jugs` để cấm rót vào hoặc ra khỏi các bình theo chỉ số từ 0.
 
 ```python
-# Giải bài toán đong nước bằng BFS với 3 bình có dung tích (3, 5, 8).
-# Trạng thái ban đầu (0, 0, 8). Mục tiêu có một bình chứa 4 lít.
+# @solve {"type":"water_jugs","capacities":[2,4,7,9],"start":[0,0,0,9],"goal":5,"algorithm":"bfs"}
 ```
 
-Hoặc:
+### Đổi tiền
+
+Tìm số đồng ít nhất. Mặc định mỗi mệnh giá có số lượng không giới hạn. Thêm `inventory` theo đúng thứ tự của `denominations` để giới hạn số đồng mỗi loại. Bài có giới hạn dùng quy hoạch động (`algorithm: "dp"`).
 
 ```python
-"""
-Giải bài toán 8-puzzle bằng A*.
-Trạng thái đầu: ((1, 2, 3), (4, 0, 6), (7, 5, 8)).
-Trạng thái đích: ((1, 2, 3), (4, 5, 6), (7, 8, 0)).
-"""
+# @solve {"type":"coin_change","amount":17,"denominations":[4,7,9],"algorithm":"bfs"}
+# @solve {"type":"coin_change","amount":9,"denominations":[4,3,2],"inventory":[1,3,0],"algorithm":"dp"}
 ```
 
-### Phím tắt
+### Đường đi trên đồ thị
 
-| Tác vụ | VS Code / Antigravity | IDLE / Notepad++ qua chương trình nền | Hoạt động |
-| --- | --- | --- | --- |
-| Tạo code offline | `Alt+1` | `Ctrl+Alt+1` | Chọn mẫu phù hợp và điền dữ liệu từ yêu cầu; không gọi API. |
-| Tạo code bằng AI | `Alt+2` | `Ctrl+Alt+2` | Thử Cloud, sau đó LLM local nếu có, rồi kho mẫu offline. Có chạy thử và hỗ trợ sửa lỗi. |
-| Gõ kết quả từng ký tự | `Alt+3` | `Ctrl+Alt+3` | Tạo code rồi gõ dần vào trình soạn thảo. Nhấn `Esc` để dừng gõ. |
-| Sửa code lỗi | `Alt+4` | `Ctrl+Alt+4` | Đọc code hiện tại, thử chạy và tìm cách sửa. |
-| Gỡ cài đặt | `Alt+0` | `Ctrl+Alt+0` | Dừng công cụ và gỡ các thành phần đã cài. |
+UCS tìm đường có tổng chi phí thấp nhất với trọng số không âm. Dùng `bellman_ford` cho trọng số âm. Nếu có thể đi từ điểm xuất phát qua một chu trình âm rồi tới đích, tool báo chi phí không có cận dưới.
 
-`Alt+Shift+Delete` cũng là phím gỡ cài đặt. Khi chương trình nền đang chạy, `Alt+Shift+Backspace` là một phím gỡ bổ sung.
+```python
+# @solve {"type":"graph","start":"A","goal":"C","edges":[["A","B",2],["B","C",1],["A","C",9]],"algorithm":"ucs","directed":true}
+# @solve {"type":"graph","start":"A","goal":"C","edges":[["A","B",2],["B","C",-5],["A","C",3]],"algorithm":"bellman_ford","directed":true}
+```
 
-**Chọn chế độ:** dùng `Alt+1` cho bài gần các mẫu có sẵn; dùng `Alt+2` khi muốn thử AI với yêu cầu khác. Thời gian xử lý phụ thuộc bài toán, máy, mạng và nhà cung cấp API.
+### Bài toán ràng buộc (CSP)
 
-Kết quả có dòng trạng thái đầu file. Các nhãn `tier1_gemini`, `tier1_groq`… cho biết đã dùng Cloud; `tier3_offline(...)` cho biết đã dùng kho mẫu. `Verified` phản ánh kết quả kiểm tra thực thi của công cụ; bạn vẫn cần đối chiếu thuật toán, số liệu và kết quả với yêu cầu bài toán.
+Ví dụ chọn giá trị trong từng miền sao cho hai biến nhận giá trị khác nhau.
 
-## 3. Lấy API key
+```python
+# @solve {"type":"csp","domains":{"A":[1,2],"B":[1,2]},"constraints":[{"op":"ne","vars":["A","B"]}]}
+```
 
-Bạn chỉ cần key của **một** nhà cung cấp. Có thể cấu hình nhiều hãng; công cụ thử theo thứ tự **Gemini → Groq → DeepSeek → OpenRouter → OpenAI**, bỏ qua hãng chưa có key hoặc gọi không thành công.
+CSP nhận miền số nguyên, tối đa 24 biến. Các phép hỗ trợ gồm `eq`, `ne`, `lt`, `le`, `all_different` và `sum_eq`. Với `sum_eq`, dùng trường `value` để khai báo tổng. Đồ thị BFS dùng cạnh `[nguồn, đích]`, UCS dùng `[nguồn, đích, trọng số]` với trọng số nguyên không âm.
+
+### 8-puzzle
+
+Khai báo hai bảng dưới dạng danh sách 9 số theo thứ tự đọc từng hàng. Dùng `0` cho ô trống. A* tìm số bước trượt ít nhất hoặc báo đích không thể đạt tới.
+
+```python
+# @solve {"type":"sliding_puzzle","start":[1,2,3,4,0,6,7,5,8],"goal":[1,2,3,4,5,6,7,8,0],"algorithm":"astar"}
+```
+
+### Tìm đường có điều kiện và cây trò chơi
+
+- `grid` dùng tọa độ `[hàng,cột]` từ 0, `#` là tường, `a` đến `f` là chìa khóa và `A` đến `F` là cửa tương ứng. `visit` khai báo các điểm phải ghé. `visit_order: "ordered"` yêu cầu ghé đúng thứ tự, kể cả khi đường ngắn hơn đi qua điểm sau trước. `moves` chọn `cardinal`, `diagonal` hoặc `knight`. `costs` đặt chi phí khi vào từng loại ô. Với bước chéo, mặc định phải đi được cả hai ô kề ở góc.
+- `minimax` dùng số cho nút lá và danh sách cho các nút con. `root` chọn bên đi trước `max` hoặc `min`. Dùng `algorithm: "minimax"` để xét toàn cây hoặc `"alpha_beta"` để cắt nhánh. Nếu đặt `depth_limit`, nút trong tại mức cắt phải khai báo cả `children` và `heuristic`.
+
+```python
+# @solve {"type":"grid","rows":[".A.",".a."],"start":[0,0],"goal":[0,2],"visit":[[0,1]]}
+# @solve {"type":"minimax","tree":[[3,5],[2,9]],"root":"min","algorithm":"alpha_beta"}
+```
+
+### Logic và ràng buộc
+
+SAT đọc mệnh đề CNF hoặc văn bản DIMACS có dòng `p cnf`. Horn suy diễn tiến theo các luật dương. Sudoku phân biệt vô nghiệm, một nghiệm và nhiều nghiệm. Phép cộng chữ số hỗ trợ cơ số 2–16, chữ khác nhau nhận chữ số khác nhau.
+
+```python
+# @solve {"type":"sat","variables":3,"clauses":[[1,-2],[2,3],[-3]]}
+# @solve {"type":"horn","facts":["A"],"rules":[{"if":["A"],"then":"B"}],"query":"B"}
+# @solve {"type":"sudoku","grid":[[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]]}
+# @solve {"type":"cryptarithm","addends":["SEND","MORE"],"result":"MONEY","base":10}
+```
+
+### Tối ưu và lập lịch
+
+Knapsack 0/1 có thể yêu cầu chọn đúng số món và giữ món bắt buộc. TSP hỗ trợ cạnh có hướng, cạnh thiếu và hành trình không quay về. Lập lịch khoảng thời gian dùng một tài nguyên. Lập lịch phụ thuộc tính đường găng khi công việc độc lập có thể chạy song song.
+
+```python
+# @solve {"type":"knapsack","capacity":7,"items":[["A",4,8],["B",3,7],["C",2,5]],"required":["C"],"count":2}
+# @solve {"type":"tsp","nodes":["A","B","C"],"start":"A","edges":[["A","B",2],["B","C",3]],"directed":true,"return_to_start":false,"end":"C"}
+# @solve {"type":"interval_scheduling","intervals":[["A",0,4,10],["B",0,2,6],["C",2,4,6]]}
+# @solve {"type":"precedence_scheduling","tasks":[["A",3],["B",5],["C",2]],"dependencies":[["A","C"],["B","C"]]}
+```
+
+### Phân công, luồng và rừng khung
+
+- `assignment` ghép mọi phần tử ở `left` với các phần tử khác nhau ở `right`, chỉ dùng cạnh đã khai báo. `objective` chọn `min` hoặc `max`.
+- `max_flow` trả giá trị luồng, luồng trên từng cạnh và lát cắt nhỏ nhất để đối chiếu.
+- `minimum_spanning_forest` dùng Kruskal trên đồ thị vô hướng. Khi đồ thị rời rạc, kết quả giữ từng thành phần, kể cả đỉnh cô lập.
+
+```python
+# @solve {"type":"assignment","left":["An","Bình"],"right":["A","B"],"edges":[["An","A",1],["An","B",4],["Bình","A",2]],"objective":"min"}
+# @solve {"type":"max_flow","nodes":["s","a","t"],"source":"s","sink":"t","edges":[["s","a",3],["a","t",2],["s","t",1]]}
+# @solve {"type":"minimum_spanning_forest","nodes":["A","B","C","D"],"edges":[["A","B",1],["B","C",2],["A","C",5]]}
+```
+
+### Học máy và quyết định
+
+- `knn` phân lớp theo khoảng cách Euclid. Có thể chuẩn hóa min–max dựa trên tập huấn luyện. Khi hòa phiếu, ưu tiên lớp có mẫu gần nhất rồi xét thứ tự tên lớp.
+- `id3` xây cây cho đặc trưng phân loại bằng độ lợi thông tin. Giá trị chưa gặp dùng lớp đa số ở nút hiện tại và được đánh dấu trong kết quả.
+- `mdp` tìm chính sách tối ưu cho số bước hữu hạn đã khai báo. Mỗi hành động cần tổng xác suất bằng 1. Dùng `{}` cho trạng thái kết thúc.
+
+```python
+# @solve {"type":"knn","train":[{"x":[0,0],"label":"A"},{"x":[2,1],"label":"B"}],"query":[1,0],"k":1,"normalize":"minmax"}
+# @solve {"type":"id3","train":[{"x":["sunny"],"label":"no"},{"x":["rainy"],"label":"yes"}],"query":["sunny"]}
+# @solve {"type":"mdp","states":{"S":{"stay":[{"to":"S","p":1,"reward":1}],"close":[{"to":"T","p":1,"reward":5}]},"T":{}},"discount":0.9,"horizon":3}
+```
+
+Mỗi dòng `@solve` là một ví dụ độc lập. Bôi đen một dòng trước khi bấm `Alt+1`. Bộ giải cũng nhận một số câu tiếng Việt về đong nước, đổi tiền, 8-puzzle và minimax khi nhận diện được toàn bộ nội dung.
+
+**Đã giải theo đặc tả** nghĩa là bộ giải offline đã tính kết quả theo dữ liệu và quy tắc được hỗ trợ. Bài vượt giới hạn, có dữ liệu thiếu hoặc dùng ràng buộc chưa hỗ trợ sẽ có thông báo riêng. Mẫu tham khảo và đề xuất Cloud cần được đối chiếu với đề. **Đã kiểm tra cú pháp** xác nhận Python đọc được đoạn code.
+
+## Lấy và dùng API key
+
+Cloud là lựa chọn theo từng yêu cầu. Trong IDE, bấm `Alt+3`, chọn hãng, nhập key tại ô che ký tự và xác nhận nội dung sẽ gửi. Key được giữ trong bộ nhớ của phiên IDE. Dùng lệnh **Quên API key phiên này** để xóa ngay. File cấu hình key kiểu cũ có thể vẫn nằm trong bản nguồn bạn từng dùng.
+
+Cloud dùng tối đa hai lượt gọi cùng nhà cung cấp. Lượt sau rà bản nháp với nguyên văn đề, gồm dữ liệu, thuật toán, ràng buộc, định dạng kết quả và các ca biên. Tool tính độc lập tối đa bốn ca nhỏ do model trích từ đề. Nếu một dự đoán sai so với bộ giải, IDE giữ nguyên tệp và hiển thị mâu thuẫn. Phép đối chiếu chỉ áp dụng cho dữ kiện được trích và dự đoán của model. Mã Cloud giữ nhãn **Đã kiểm tra cú pháp** khi có bản đề xuất. Hai lượt gọi có thể dùng nhiều token hơn một lượt.
 
 ### Google Gemini
 
-1. Mở [trang API key của Google AI Studio](https://aistudio.google.com/apikey) và đăng nhập tài khoản Google.
-2. Hoàn tất bước chấp nhận điều khoản nếu được hỏi.
-3. Chọn **Create API key**, rồi chọn hoặc tạo Google Cloud project theo hướng dẫn trên trang.
-4. Sao chép key và chuyển đến phần **Nạp key vào công cụ** bên dưới.
-
-Nếu không chọn được project, xem phần thiết lập project hoặc nhập project trong AI Studio. Nếu không có quyền tạo key, cần tài khoản hoặc project mà bạn có quyền sử dụng. Hướng dẫn chính thức: [Using Gemini API keys](https://ai.google.dev/gemini-api/docs/api-key).
+1. Đăng nhập [Google AI Studio](https://aistudio.google.com/apikey).
+2. Chọn **Create API key** và chọn hoặc tạo project theo hướng dẫn.
+3. Sao chép key để nhập vào IDE. Xem thêm [hướng dẫn Gemini API keys](https://ai.google.dev/gemini-api/docs/api-key).
 
 ### Groq
 
-1. Mở [Groq Console](https://console.groq.com/) và đăng nhập hoặc tạo tài khoản.
-2. Vào [API Keys](https://console.groq.com/keys).
-3. Chọn **Create API Key**, đặt tên dễ nhận biết, ví dụ `pylance-helper`.
-4. Sao chép key vừa tạo và lưu để nạp vào công cụ.
+1. Đăng nhập [Groq Console](https://console.groq.com/).
+2. Vào trang [API Keys](https://console.groq.com/keys), tạo một key rồi sao chép.
+3. Chọn **Groq** trong IDE. Xem thêm [Groq Quickstart](https://console.groq.com/docs/quickstart).
 
-Hướng dẫn chính thức: [Groq Quickstart](https://console.groq.com/docs/quickstart).
-
-### Nhà cung cấp khác
-
-| Nhà cung cấp | Trang tạo / quản lý key | Tham số nạp |
-| --- | --- | --- |
-| DeepSeek | [DeepSeek Platform](https://platform.deepseek.com/api_keys) | `--deepseek` |
-| OpenRouter | [OpenRouter Keys](https://openrouter.ai/settings/keys) | `--openrouter` |
-| OpenAI | [OpenAI Platform API Keys](https://platform.openai.com/api-keys) | `--openai` |
-
-Đăng nhập nhà cung cấp, tạo key trong mục API Keys và kiểm tra quyền truy cập model, hạn mức hoặc số dư của tài khoản. Gói miễn phí và mức phí phụ thuộc nhà cung cấp, model và tài khoản; không phải key nào cũng dùng được ngay với mọi model.
-
-## 4. Nạp key vào công cụ
-
-### Cách dễ nhất: mở file nhập key
-
-Sau khi cài đặt, nhấp đúp [nhap_api_key.bat](nhap_api_key.bat), hoặc chạy:
-
-```powershell
-python nhap_api_key.py
-```
-
-- Dán key vào dòng tương ứng với hãng bạn chọn.
-- Nhấn **Enter** để bỏ qua và giữ cấu hình cũ của hãng không dùng.
-- Script sẽ thử gọi Cloud nếu có key. Dòng `[THÀNH CÔNG]` kèm tên hãng và phản hồi `API_OK` giúp kiểm tra đường gọi API. Nếu đã cấu hình nhiều hãng, phép thử xác nhận hãng đầu tiên trả lời thành công.
-- Nếu hiện `[CHƯA KẾT NỐI ĐƯỢC TẦNG 1]`, kiểm tra key, mạng, quyền model, hạn mức và số dư. `Alt+1` vẫn dùng được offline.
-
-**Sau khi đổi key**, thử lại `Alt+2` trong VS Code / Antigravity. Nếu dùng IDLE / Notepad++, chạy lại `setup_nhanh.bat` để chương trình nền nạp cấu hình mới, rồi **Reload Window** nếu IDE cũng đang mở.
-
-### Nạp bằng lệnh
-
-Thay nội dung `YOUR_..._API_KEY` bằng key của bạn:
-
-```powershell
-python nhap_api_key.py --gemini "YOUR_GEMINI_API_KEY"
-python nhap_api_key.py --groq "YOUR_GROQ_API_KEY"
-```
-
-Có thể nạp nhiều hãng trong một lần:
-
-```powershell
-python nhap_api_key.py --gemini "YOUR_GEMINI_API_KEY" --groq "YOUR_GROQ_API_KEY"
-```
-
-Kiểm tra lại kết nối với cấu hình đã lưu:
-
-```powershell
-python nhap_api_key.py --test
-```
-
-### Đổi cấu hình trong trình soạn thảo
-
-Trong một file tạm riêng, nhập dòng sau rồi bấm `Alt+1`:
-
-```python
-# @cfg gemini:YOUR_GEMINI_API_KEY groq:YOUR_GROQ_API_KEY
-```
-
-Chỉ giữ hãng bạn cần. Dòng `# Pylance config updated: ...` cho biết đã lưu cấu hình; đây chưa phải phép thử gọi API. Dùng lệnh `--test` ở trên để thử kết nối.
-
-Nếu model mặc định của Gemini hoặc Groq không còn khả dụng, có thể đổi model bằng cú pháp sau rồi bấm `Alt+1`:
-
-```python
-# @cfg gemini_model:MODEL_ID_TU_GOOGLE_AI_STUDIO
-# @cfg groq_model:MODEL_ID_TU_GROQ_CONSOLE
-```
-
-Dùng ID model mà tài khoản của bạn được phép gọi. Thực hiện từng dòng trong file tạm riêng.
-
-### Lưu trữ key
-
-Cấu hình được lưu trong `core_engine/.pylance_cache.json` và bản cấu hình ở `%LOCALAPPDATA%\Programs\PylanceHelper`. Key được làm rối bằng XOR + Base64 và có thể khôi phục; người có quyền đọc file vẫn có thể lấy key.
-
-`.gitignore` đã loại các file cấu hình này khỏi Git. Không đưa key thật vào file ví dụ, README hay commit. Lệnh có key có thể lưu trong lịch sử terminal; cách nhập trực tiếp bằng `nhap_api_key.bat` giúp tránh đặt key trong câu lệnh. Nếu đã công khai key, thu hồi tại trang quản lý của hãng và tạo key mới.
-
-## 5. Gỡ cài đặt và cập nhật
-
-### Gỡ cài đặt
-
-Chọn một cách:
-
-- Trong VS Code / Antigravity: bấm `Alt+0`.
-- Với chương trình nền: bấm `Ctrl+Alt+0`.
-- Nhấp đúp [go_cai_dat.bat](go_cai_dat.bat), hoặc chạy `python go_cai_dat.py`.
-
-Bản đã sửa khóa các lệnh khi bắt đầu gỡ và chỉ báo thành công sau khi script gỡ hoàn tất. Nếu có lỗi, chạy `go_cai_dat.bat` để xem chi tiết rồi thử lại.
-
-**Sau khi gỡ, chọn Ctrl+Shift+P → Reload Window trong từng cửa sổ VS Code / Antigravity đang mở**, hoặc đóng rồi mở lại IDE. Xóa thư mục extension không tự dỡ mã đã nạp trong bộ nhớ. Điều này đặc biệt cần thiết với bản cũ từng báo gỡ thành công nhưng `Alt+1` vẫn chạy.
-
-Trình gỡ xóa bản cài, extension, liên kết thư viện, file chạy thử và Clipboard. Thư mục mã nguồn bạn tải về cùng file cấu hình key trong thư mục nguồn vẫn còn; muốn xóa cả bản nguồn thì tự xóa thư mục sau khi đã gỡ.
-
-### Cập nhật bản mới
-
-Nếu tải bằng Git, trong thư mục repo chạy:
-
-```powershell
-git pull --ff-only
-python setup.py
-```
-
-Nếu tải bằng ZIP, tải bản ZIP mới, giải nén và chạy setup từ bản mới. Sau đó **Reload Window** trong các IDE để nạp extension vừa cập nhật.
-
-## 6. Xử lý lỗi thường gặp
-
-| Hiện tượng | Cách xử lý |
+| Nhà cung cấp khác | Trang quản lý key |
 | --- | --- |
-| `python` không được nhận diện hoặc mở Microsoft Store | Cài Python từ python.org, bật PATH, mở lại PowerShell và kiểm tra `python --version`. Nếu máy chỉ nhận lệnh `py`, có thể dùng `py -3 setup.py`. |
-| `Alt+1` / `Alt+0` không phản hồi trong IDE | Chạy lại setup, chọn **Reload Window**, rồi kiểm tra mục **Keyboard Shortcuts** xem tổ hợp phím có bị lệnh khác chiếm không. Nếu cần gỡ ngay, chạy `go_cai_dat.bat`. |
-| Đã gỡ nhưng `Alt+1` vẫn chạy | Reload **tất cả** cửa sổ VS Code / Antigravity. Với bản cũ, mã extension còn trong bộ nhớ dù file đã bị xóa. |
-| IDLE / Notepad++ không nhận `Alt+1` | Dùng `Ctrl+Alt+1`. Chạy lại setup nếu chương trình nền chưa được khởi động. |
-| Thiếu `simpleai`, `kanren` hoặc `sympy` | Chạy lại lệnh cài wheel ở phần 1 bằng đúng Python đang xử lý code. Nếu dùng `.venv`, gọi trực tiếp Python trong `.venv`. |
-| Đã nạp key nhưng kết quả vẫn ghi `tier3_offline(...)` | Chạy `python nhap_api_key.py --test`; kiểm tra key, mạng, model và hạn mức. Xem tên hãng thật sự phản hồi trong kết quả kiểm tra. |
-| Kết quả báo `Unverified` hoặc sai dữ liệu | Đọc lại yêu cầu và số liệu, chạy code để xem lỗi cụ thể; thử `Alt+4` với code lỗi hoặc `Alt+2` với yêu cầu rõ hơn. |
-| Code bị thay thế ngoài ý muốn | Dùng **Ctrl+Z** trong IDE và thử lại trên file riêng. |
+| DeepSeek | [DeepSeek Platform](https://platform.deepseek.com/api_keys) |
+| OpenRouter | [OpenRouter Keys](https://openrouter.ai/settings/keys) |
+| OpenAI | [OpenAI Platform API Keys](https://platform.openai.com/api-keys) |
 
-## 7. Các file cần biết
+Có thể thử một hãng từ terminal bằng lệnh dưới đây. Key chỉ dùng cho phép thử này. Dùng ô nhập trong IDE để chạy yêu cầu Cloud.
 
-| File / thư mục | Mục đích |
-| --- | --- |
-| [setup_nhanh.bat](setup_nhanh.bat) / [setup.py](setup.py) | Cài hoặc cập nhật extension và chương trình nền. |
-| [nhap_api_key.bat](nhap_api_key.bat) / [nhap_api_key.py](nhap_api_key.py) | Nhập key và thử kết nối Cloud. |
-| [go_cai_dat.bat](go_cai_dat.bat) / [go_cai_dat.py](go_cai_dat.py) | Gỡ cài đặt và hiển thị lỗi nếu chưa hoàn tất. |
-| [core_engine](core_engine) | Phân tích yêu cầu, chọn mẫu / gọi AI và kiểm tra code. |
-| [shells](shells) | Extension cho IDE và chương trình nền Windows. |
-| [setup_lab/wheels](setup_lab/wheels) | Các gói Python để cài offline. |
-| [tests](tests) | Kiểm thử bộ xử lý và luồng gỡ cài đặt. |
+```powershell
+py -3 nhap_api_key.py --provider gemini
+```
+
+Nếu Cloud trả lỗi, kiểm tra mạng, key, quyền truy cập model và giới hạn tài khoản. Có thể đặt ID model tương thích trong `%LOCALAPPDATA%\Programs\PylanceHelper\models.json`, ví dụ `{"gemini_model":"ID_MODEL_CUA_BAN"}`. File này dùng cho tùy chọn model. Nhập key qua ô nhập của IDE hoặc terminal ở trên.
+
+## Cập nhật, gỡ và xử lý lỗi
+
+- **Cập nhật** bằng cách chạy lại setup từ bản mới và dùng **Reload Window**. Nếu từng dùng bản cũ trên hai IDE, cập nhật hoặc gỡ riêng cho từng IDE.
+- **Gỡ cài đặt** bằng `Alt+0` hoặc [go_cai_dat.bat](go_cai_dat.bat). Nếu đã cài VSIX thủ công, mở **Extensions** để gỡ extension sau khi đã gỡ runtime. Reload các cửa sổ IDE đã nạp extension.
+- **Python không được nhận diện** thì chạy `py -3 --version` hoặc `python --version`. Nếu trình cài chưa nhận đúng IDE, dùng `--check` để xem điều kiện còn thiếu.
+- **Phím tắt không phản hồi** thì thử lệnh tương ứng trong **Ctrl+Shift+P** và kiểm tra **Keyboard Shortcuts**. Bản cài cũ cần reload để bỏ các phím đã nạp.
+- **Tool báo thiếu dữ liệu hoặc vượt giới hạn** thì xem chẩn đoán và thu nhỏ bài thử. Với ca có nhiều điều kiện, kiểm tra rằng từng điều kiện đều xuất hiện trong yêu cầu có cấu trúc.
+
+Xem [mã bộ xử lý](core_engine), [extension](shells/vscode_ext) và [kiểm thử](tests).

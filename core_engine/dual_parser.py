@@ -8,7 +8,10 @@ Ho tro:
 4. Tu dong tach phan comment de bai va phan code khung co san trong file de thi.
 """
 
+import ast
+import io
 import re
+import tokenize
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -132,7 +135,7 @@ BAI_ALIAS_TO_SKELETON = {
 
 @dataclass
 class ParsedInput:
-    mode: str  # "cfg" | "dsl" | "natural" | "self_fix"
+    mode: str  # "cfg" | "structured" | "dsl" | "natural" | "self_fix"
     raw_input: str
     prompt_text: str
     existing_code: str = ""
@@ -159,82 +162,47 @@ def _is_system_status_comment(line_content: str) -> bool:
 
 
 def _extract_comments_and_code(raw_text: str) -> Tuple[str, str]:
-    """
-    Tách phần đề bài trong `\"\"\" yêu cầu \"\"\"`, `''' yêu cầu '''` hoặc `# yêu cầu`
-    và phần code Python có sẵn.
-    Hỗ trợ đầy đủ:
-    - `\"\"\" yêu cầu \"\"\"` trên 1 dòng hoặc nhiều dòng (kể cả khi đặt đầu file, giữa file, cuối file).
-    - `''' yêu cầu '''` trên 1 dòng hoặc nhiều dòng.
-    - `# yêu cầu` trên 1 dòng hoặc nhiều dòng.
-    - Văn bản thuần copy từ PDF/Word/LMS chưa có dấu `#` hay `\"\"\"`.
-    """
-    text = raw_text.strip()
-    if not text:
-        return "", ""
+    """Extract comment or standalone quoted requests without stripping code strings."""
+    lines = raw_text.splitlines()
+    descriptions: List[Tuple[int, str]] = []
+    prompt_lines = set()
+    if re.match(r"^@solve\b", raw_text, re.IGNORECASE):
+        return raw_text, ""
 
-    docstring_prompts: List[str] = []
+    try:
+        bracket_depth = 0
+        for token in tokenize.generate_tokens(io.StringIO(raw_text).readline):
+            kind, value, (row, column), (end_row, end_column), _ = token
+            if kind == tokenize.OP and value in ("(", "[", "{"):
+                bracket_depth += 1
+            elif kind == tokenize.OP and value in (")", "]", "}"):
+                bracket_depth -= 1
+            elif kind == tokenize.COMMENT and column == 0 and bracket_depth == 0:
+                comment = value.lstrip("#").strip()
+                if not _is_system_status_comment(comment):
+                    descriptions.append((row, comment))
+                prompt_lines.add(row)
+            elif (
+                kind == tokenize.STRING and column == 0 and bracket_depth == 0
+                and value.startswith(('"""', "'''"))
+                and not lines[end_row - 1][end_column:].strip()
+            ):
+                quote = value[:3]
+                if value.endswith(quote) and len(value) >= 6:
+                    descriptions.append((row, value[3:-3].strip()))
+                    prompt_lines.update(range(row, end_row + 1))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        # Keep unparsed source intact for the syntax checker or the model.
+        pass
 
-    # 1. Bat moi khoi """ ... """ hoac ''' ... ''' (ke ca 1 dong hay nhieu dong)
-    triple_pattern = re.compile(r'("""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\')')
-    for match in triple_pattern.finditer(text):
-        full_box = match.group(0)
-        inner = full_box[3:-3].strip()
-        if inner and not inner.lower().startswith("module "):
-            docstring_prompts.append(inner)
-
-    # Xoa cac khoi triple-quoted da bat khoi van ban de phan tich tiep # va code
-    remaining_text = triple_pattern.sub("", text)
-
-    # Ho tro truong hop nguoi dung mo """ yeu cau nhung quen dong """ o cuoi file
-    for open_delim in ('"""', "'''"):
-        if open_delim in remaining_text:
-            parts = remaining_text.split(open_delim, 1)
-            remaining_text = parts[0]
-            unclosed_inner = parts[1].strip()
-            if unclosed_inner:
-                docstring_prompts.append(unclosed_inner)
-
-    lines = remaining_text.splitlines()
-    hash_comment_lines: List[str] = []
-    code_lines: List[str] = []
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("#"):
-            cleaned_comment = re.sub(r"^#+\s?", "", stripped).strip()
-            if not _is_system_status_comment(cleaned_comment):
-                hash_comment_lines.append(cleaned_comment)
-        else:
-            code_lines.append(line)
-
-    code_block = "\n".join(code_lines).strip()
-
-    # Neu co """ yeu cau """ hoac ''' yeu cau ''', uu tien lay """ yeu cau """
-    # (Chi kem them dong # neu dong # do chua lenh @cfg hoac @search/@csp/...)
-    combined_comments: List[str] = []
-    if docstring_prompts:
-        # Lay khoi """ yeu cau """ moi nhat (hoac tat ca khoi docstring nguoi dung viet)
-        combined_comments.append("\n".join(docstring_prompts))
-        for hc in hash_comment_lines:
-            if "@" in hc:
-                combined_comments.append(hc)
-    elif hash_comment_lines:
-        combined_comments.append("\n".join(hash_comment_lines))
-
-    comment_block = "\n".join(combined_comments).strip()
-
-    # Neu khong co '#' hay '"""' nhung van ban la de thi tu nhien (copy thang tu PDF/Word/Web)
-    if not comment_block and code_block:
-        python_indicators = (
-            "import ", "from ", "class ", "def ", "if __name__", "print(", "return "
-        )
-        has_py_keyword = any(ind in code_block for ind in python_indicators)
-        if not has_py_keyword:
-            return code_block, ""
-
-    return comment_block, code_block
+    prompt = "\n".join(text for _, text in sorted(descriptions)).strip()
+    existing_code = "\n".join(line for row, line in enumerate(lines, 1) if row not in prompt_lines).strip()
+    if not prompt and existing_code:
+        try:
+            ast.parse(existing_code)
+        except (SyntaxError, ValueError, RecursionError):
+            return existing_code, ""
+    return prompt, existing_code
 
 
 def _parse_key_value_tokens(line: str) -> Dict[str, str]:
@@ -253,10 +221,17 @@ def parse_user_input(raw_text: str, force_mode: Optional[str] = None) -> ParsedI
         return ParsedInput(mode="natural", raw_input="", prompt_text="")
 
     comment_text, existing_code = _extract_comments_and_code(cleaned_raw)
-    effective_prompt = comment_text if comment_text else cleaned_raw
+    effective_prompt = comment_text or ("" if existing_code else cleaned_raw)
 
-    # 1. Kiem tra lenh cau hinh ngam: # @cfg gemini:AIza...
-    m_cfg = re.search(r"@cfg\b(.*)$", effective_prompt, re.IGNORECASE | re.MULTILINE)
+    if re.match(r"^@solve\b", effective_prompt, re.IGNORECASE):
+        return ParsedInput(
+            mode="structured",
+            raw_input=cleaned_raw,
+            prompt_text=effective_prompt,
+            existing_code=existing_code,
+        )
+
+    m_cfg = re.match(r"@cfg\b(.*)$", effective_prompt, re.IGNORECASE | re.MULTILINE)
     if m_cfg:
         cfg_params = _parse_key_value_tokens(m_cfg.group(1))
         return ParsedInput(
@@ -267,16 +242,17 @@ def parse_user_input(raw_text: str, force_mode: Optional[str] = None) -> ParsedI
         )
 
     # 2. Neu ep che do Self-Fix (Alt + 4) va co code Python de sua
-    if force_mode == "self_fix" and existing_code.strip():
+    has_code_to_fix = existing_code.strip() or not cleaned_raw.startswith(("#", '"""', "'''"))
+    if force_mode == "self_fix" and has_code_to_fix:
         return ParsedInput(
             mode="self_fix",
             raw_input=cleaned_raw,
             prompt_text=comment_text,
-            existing_code=existing_code,
+            existing_code=cleaned_raw,
         )
 
     # 3. Kiem tra Shorthand DSL (@search, @raw, @local, @csp, @game, @logic)
-    m_dsl = re.search(
+    m_dsl = re.match(
         r"(@(?:search|raw|local|csp|game|logic|kanren|s|r|l|c|g))\b(.*)$",
         effective_prompt,
         re.IGNORECASE | re.MULTILINE,

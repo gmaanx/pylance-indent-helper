@@ -1,66 +1,39 @@
-# -*- coding: utf-8 -*-
-"""
-Stealth Configuration & Obfuscated API Key Manager.
-Stores keys with XOR + Base64 obfuscation so plain-text keys never appear on disk.
-Supports live key updates via Python comments: # @cfg gemini:AIza...
-"""
+﻿"""Runtime preferences and API credentials scoped to a single request."""
 
 import base64
 import json
 import os
+import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Iterator, Mapping
 
+PROVIDERS = ("gemini", "groq", "deepseek", "openrouter", "openai")
+_SESSION_KEYS: ContextVar[Mapping[str, str]] = ContextVar("session_keys", default={})
+_MODEL_ID = re.compile(r"[A-Za-z0-9_.:-]+(?:/[A-Za-z0-9_.:-]+)*")
+
+# Retained for callers reading old configuration exports. The runtime ignores
+# all encoded key fields and never writes configuration containing credentials.
 _XOR_MASK = b"PylanceIndentHelper_v2026_UEH_StealthKeyMask"
 
 
-def _xor_bytes(data: bytes, mask: bytes = _XOR_MASK) -> bytes:
-    return bytes(b ^ mask[i % len(mask)] for i, b in enumerate(data))
+def _xor_bytes(data: bytes) -> bytes:
+    return bytes(value ^ _XOR_MASK[i % len(_XOR_MASK)] for i, value in enumerate(data))
 
 
 def obfuscate_str(plain: str) -> str:
-    if not plain:
-        return ""
-    raw = plain.encode("utf-8")
-    xored = _xor_bytes(raw)
-    return base64.urlsafe_b64encode(xored).decode("ascii")
+    return base64.urlsafe_b64encode(_xor_bytes(plain.encode("utf-8"))).decode("ascii")
 
 
 def deobfuscate_str(encoded: str) -> str:
-    if not encoded:
-        return ""
     try:
-        xored = base64.urlsafe_b64decode(encoded.encode("ascii"))
-        raw = _xor_bytes(xored)
-        return raw.decode("utf-8")
-    except Exception:
+        return _xor_bytes(base64.urlsafe_b64decode(encoded)).decode("utf-8")
+    except (ValueError, UnicodeError):
         return ""
 
 
-def get_stealth_dir() -> Path:
-    local_app = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
-    stealth_path = Path(local_app) / "Programs" / "PylanceHelper"
-    try:
-        stealth_path.mkdir(parents=True, exist_ok=True)
-        return stealth_path
-    except Exception:
-        fallback = Path(__file__).resolve().parent
-        return fallback
-
-
-def get_config_file() -> Path:
-    local_cfg = Path(__file__).resolve().parent / ".pylance_cache.json"
-    if local_cfg.exists():
-        return local_cfg
-    return get_stealth_dir() / ".pylance_cache.json"
-
-
-DEFAULT_CONFIG: Dict[str, Any] = {
-    "gemini_key_enc": "",
-    "groq_key_enc": "",
-    "deepseek_key_enc": "",
-    "openrouter_key_enc": "",
-    "openai_key_enc": "",
+DEFAULT_CONFIG: dict[str, Any] = {
     "gemini_model": "gemini-2.5-flash",
     "groq_model": "llama-3.3-70b-versatile",
     "deepseek_model": "deepseek-chat",
@@ -69,8 +42,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "local_llm_url": "http://127.0.0.1:11434/api/generate",
     "local_llama_cpp_url": "http://127.0.0.1:8080/completion",
     "local_model": "qwen2.5-coder:1.5b",
-    "append_verified_comment": False,
-    "verified_comment_format": "# kq: {summary}",
     "ping_timeout": 0.8,
     "cloud_timeout": 8.0,
     "local_timeout": 4.5,
@@ -78,97 +49,48 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 
+@contextmanager
+def session_credentials(keys: Mapping[str, str]) -> Iterator[None]:
+    scoped = {
+        provider: key.strip()
+        for provider, key in keys.items()
+        if provider in PROVIDERS and isinstance(key, str) and key.strip()
+    }
+    token = _SESSION_KEYS.set(scoped)
+    try:
+        yield
+    finally:
+        _SESSION_KEYS.reset(token)
+
+
 class ConfigManager:
     def __init__(self) -> None:
-        self._data: Dict[str, Any] = dict(DEFAULT_CONFIG)
-        self.load()
+        self._data = dict(DEFAULT_CONFIG)
+        local_app = os.environ.get("LOCALAPPDATA")
+        if local_app:
+            self._load_models(Path(local_app) / "Programs" / "PylanceHelper" / "models.json")
 
-    def load(self) -> None:
-        paths_to_check = [
-            Path(__file__).resolve().parent / ".pylance_cache.json",
-            get_stealth_dir() / ".pylance_cache.json",
-        ]
-        for p in paths_to_check:
-            if p.exists():
-                try:
-                    loaded = json.loads(p.read_text(encoding="utf-8"))
-                    if isinstance(loaded, dict):
-                        self._data.update(loaded)
-                except Exception:
-                    pass
-
-        # Also allow environment variables if set
-        env_map = {
-            "GEMINI_API_KEY": "gemini",
-            "GROQ_API_KEY": "groq",
-            "DEEPSEEK_API_KEY": "deepseek",
-            "OPENROUTER_API_KEY": "openrouter",
-            "OPENAI_API_KEY": "openai",
-        }
-        for env_name, provider in env_map.items():
-            val = os.environ.get(env_name, "").strip()
-            if val and not self.get_api_key(provider):
-                self.set_api_key(provider, val, save_disk=False)
-
-    def save(self) -> None:
-        target = Path(__file__).resolve().parent / ".pylance_cache.json"
+    def _load_models(self, config_file: Path) -> None:
         try:
-            target.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-        try:
-            stealth_target = get_stealth_dir() / ".pylance_cache.json"
-            stealth_target.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    def set_api_key(self, provider: str, raw_key: str, save_disk: bool = True) -> None:
-        provider = provider.lower().strip()
-        field = f"{provider}_key_enc"
-        self._data[field] = obfuscate_str(raw_key.strip())
-        if save_disk:
-            self.save()
+            models = json.loads(config_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(models, dict):
+            return
+        for name in (*PROVIDERS, "local"):
+            field = f"{name}_model"
+            value = models.get(field)
+            if isinstance(value, str) and len(value) <= 200 and _MODEL_ID.fullmatch(value):
+                self._data[field] = value
 
     def get_api_key(self, provider: str) -> str:
-        provider = provider.lower().strip()
-        field = f"{provider}_key_enc"
-        enc = self._data.get(field, "")
-        return deobfuscate_str(enc)
+        return _SESSION_KEYS.get().get(provider, "")
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
 
-    def set(self, key: str, value: Any, save_disk: bool = True) -> None:
-        self._data[key] = value
-        if save_disk:
-            self.save()
-
-    def apply_inline_cfg(self, cfg_tokens: Dict[str, str]) -> str:
-        """
-        Applies inline configuration from comment e.g.:
-        # @cfg gemini:AIzaSy... groq:gsk_... verified:off
-        Returns a stealth status Python comment.
-        """
-        updated = []
-        for k, v in cfg_tokens.items():
-            kl = k.lower().strip()
-            if kl in ("gemini", "groq", "deepseek", "openrouter", "openai"):
-                self.set_api_key(kl, v, save_disk=True)
-                updated.append(kl)
-            elif kl in ("verified", "verified_tag", "append_verified_comment"):
-                flag = v.lower() in ("1", "true", "on", "yes")
-                self.set("append_verified_comment", flag)
-                updated.append(f"verified={flag}")
-            elif kl in ("model", "gemini_model", "groq_model"):
-                target_key = "gemini_model" if kl == "model" else kl
-                self.set(target_key, v)
-                updated.append(f"{target_key}={v}")
-            elif kl in ("local_url", "local"):
-                self.set("local_llm_url", v)
-                updated.append("local_url")
-        if updated:
-            return f"# Pylance config updated: {', '.join(updated)}"
-        return "# Pylance config unchanged"
+    def apply_inline_cfg(self, cfg_tokens: dict[str, str]) -> str:
+        return "# Cấu hình trong mã đã ngừng hỗ trợ. Nhập API key trong lệnh Cloud của IDE."
 
 
 CONFIG = ConfigManager()

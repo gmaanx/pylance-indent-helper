@@ -14,14 +14,14 @@ EXTENSION_VSIXMANIFEST = """<?xml version="1.0" encoding="utf-8"?>
     <Identity Language="en-US" Id="{name}" Version="{version}" Publisher="{publisher}" />
     <DisplayName>{displayName}</DisplayName>
     <Description xml:space="preserve">{description}</Description>
-    <Tags>python,formatters,linters</Tags>
-    <Categories>Formatters,Linters</Categories>
+    <Tags>python,education,practice</Tags>
+    <Categories>Education</Categories>
     <GalleryFlags>Public</GalleryFlags>
     <Properties>
       <Property Id="Microsoft.VisualStudio.Code.Engine" Value="^1.75.0" />
       <Property Id="Microsoft.VisualStudio.Code.ExtensionDependencies" Value="" />
       <Property Id="Microsoft.VisualStudio.Code.ExtensionPack" Value="" />
-      <Property Id="Microsoft.VisualStudio.Code.ExtensionKind" Value="workspace" />
+      <Property Id="Microsoft.VisualStudio.Code.ExtensionKind" Value="ui" />
     </Properties>
   </Metadata>
   <Installation>
@@ -43,13 +43,13 @@ CONTENT_TYPES_XML = """<?xml version="1.0" encoding="utf-8"?>
 """
 
 
-def build_vsix() -> Path:
+def build_vsix(output_path: Path | None = None) -> Path:
     ext_dir = Path(__file__).resolve().parent
     pkg_json_path = ext_dir / "package.json"
     pkg = json.loads(pkg_json_path.read_text(encoding="utf-8"))
 
     vsix_name = f"{pkg['name']}-{pkg['version']}.vsix"
-    out_vsix = ext_dir.parents[1] / "setup_lab" / vsix_name
+    out_vsix = output_path or (ext_dir.parents[1] / "setup_lab" / vsix_name)
 
     manifest_xml = EXTENSION_VSIXMANIFEST.format(
         name=pkg["name"],
