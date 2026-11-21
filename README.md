@@ -1,6 +1,6 @@
 ﻿# Trợ lý bài tập Python
 
-Tiện ích Windows hỗ trợ luyện bài Python trong VS Code hoặc Antigravity. Bộ giải offline hỗ trợ 21 dạng tìm kiếm, logic, tối ưu và học máy có đặc tả. Với yêu cầu khác, tool có thể đưa ra mẫu tham khảo hoặc gửi yêu cầu đến nhà cung cấp Cloud do bạn chọn. Trong bài thi, dùng các chế độ mà quy chế cho phép.
+Tiện ích Windows hỗ trợ luyện bài Python trong VS Code hoặc Antigravity. Bộ giải offline hỗ trợ 42 dạng Python cơ bản, tìm kiếm, logic, tối ưu, xác suất và học máy có đặc tả. Với yêu cầu khác, tool có thể đưa ra mẫu tham khảo hoặc gửi yêu cầu đến nhà cung cấp Cloud do bạn chọn. Trong bài thi, dùng các chế độ mà quy chế cho phép.
 
 ## Cài đặt offline
 
@@ -41,6 +41,8 @@ Có thể tìm các lệnh trong **Ctrl+Shift+P**. Lệnh hủy hiện ở thôn
 ## Dùng bộ giải offline
 
 Bộ giải đọc những câu mô tả đơn giản mà nó nhận diện được. Với dữ liệu dài hoặc cần kết quả có thể kiểm tra, viết một dòng comment `# @solve` chứa JSON. Đặt trong file riêng hoặc bôi đen đúng dòng đó trước khi chạy `Alt+1`.
+
+Xem bảng đối chiếu bài tập theo từng buổi, các chương bài giảng và 21 ví dụ bổ sung. [Phạm vi offline theo môn học](docs/course-coverage.md)
 
 ### Đong nước
 

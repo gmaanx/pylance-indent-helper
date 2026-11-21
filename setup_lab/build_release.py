@@ -7,6 +7,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 ROOT = Path(__file__).resolve().parents[1]
 INCLUDE = (
     "README.md",
+    "docs/course-coverage.md",
     "setup.py",
     "setup_nhanh.bat",
     "go_cai_dat.py",

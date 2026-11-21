@@ -633,11 +633,19 @@ def solve_offline(prompt: str, target_skeleton_id: Optional[str]) -> Optional[Of
 
 
 def solve_spec(problem: object) -> OfflineSolution:
+    from .offline_agents import AGENT_SOLVERS
     from .offline_combinatorial import COMBINATORIAL_SOLVERS
+    from .offline_course_csp import COURSE_CSP_SOLVERS
+    from .offline_course_logic import COURSE_LOGIC_SOLVERS
+    from .offline_course_search import COURSE_SEARCH_SOLVERS
+    from .offline_knowledge import KNOWLEDGE_SOLVERS
     from .offline_learning import LEARNING_SOLVERS
+    from .offline_local_search import LOCAL_SEARCH_SOLVERS
     from .offline_logic import LOGIC_SOLVERS
     from .offline_optimization import OPTIMIZATION_SOLVERS
+    from .offline_python_basics import PYTHON_BASICS_SOLVERS
     from .offline_search import SEARCH_SOLVERS
+    from .offline_uncertainty import UNCERTAINTY_SOLVERS
 
     if not isinstance(problem, dict):
         raise OfflineProblemError("invalid", "@solve nhận một đối tượng JSON.")
@@ -649,6 +657,9 @@ def solve_spec(problem: object) -> OfflineSolution:
         "graph": _graph, "csp": _csp, "sliding_puzzle": _sliding_puzzle,
         **LOGIC_SOLVERS, **OPTIMIZATION_SOLVERS, **SEARCH_SOLVERS,
         **COMBINATORIAL_SOLVERS, **LEARNING_SOLVERS,
+        **AGENT_SOLVERS, **COURSE_CSP_SOLVERS, **COURSE_LOGIC_SOLVERS,
+        **COURSE_SEARCH_SOLVERS, **KNOWLEDGE_SOLVERS, **PYTHON_BASICS_SOLVERS,
+        **UNCERTAINTY_SOLVERS, **LOCAL_SEARCH_SOLVERS,
     }
     if not isinstance(problem_type, str) or problem_type not in solvers:
         raise OfflineProblemError("unsupported", "type cần là một trong các dạng: " + ", ".join(sorted(solvers)) + ".")
