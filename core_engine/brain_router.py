@@ -19,6 +19,7 @@ class _NoRedirect(HTTPRedirectHandler):
 _CLOUD_OPENER = build_opener(_NoRedirect())
 _LOCAL_OPENER = build_opener(ProxyHandler({}), _NoRedirect())
 _RESPONSE_LIMIT = 2_000_000
+_OLLAMA_URL = "http://127.0.0.1:11434"
 _CLOUD_CONFIG = (
     ("gemini", "https://generativelanguage.googleapis.com/v1beta/models/", "gemini-2.5-flash"),
     ("groq", "https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile"),
@@ -50,6 +51,8 @@ def build_context_injected_prompt(
         "định dạng đầu ra và các ràng buộc nêu trong yêu cầu. Nếu dùng mẫu tham khảo, bỏ dữ liệu "
         "ví dụ và thay bằng dữ liệu của yêu cầu. Tránh giả định làm thay đổi bài toán. "
         "Xử lý dữ liệu thiếu hoặc không có nghiệm rõ ràng. Chỉ trả về mã Python. "
+        "Dùng thư viện chuẩn khi đề yêu cầu Python thuần hoặc không cần thư viện ngoài. "
+        "Giữ đúng tên lớp, tên hàm, số chiều và chữ ký phương thức mà đề đã nêu. "
         "Áp dụng hướng dẫn SimpleAI và miniKanren dưới đây nếu dùng các thư viện đó.\n\n"
         + SIMPLEAI_STRICT_RULES
     )
@@ -185,29 +188,46 @@ def call_tier2_local_llm(
     system_prompt, user_msg = build_context_injected_prompt(
         user_prompt, [best_skeleton] if best_skeleton else [], existing_code,
     )
-    prompt = system_prompt + "\n\n" + user_msg
-    timeout = float(CONFIG.get("local_timeout", 4.5))
-    configs = (
-        ("ollama", "http://127.0.0.1:11434/api/generate", "response", {
-            "model": CONFIG.get("local_model", "qwen2.5-coder:1.5b"),
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.1, "num_predict": 4096},
-        }),
-        ("llamacpp", "http://127.0.0.1:8080/completion", "content", {
-            "prompt": prompt,
-            "temperature": 0.1,
-            "n_predict": 4096,
-        }),
-    )
-    for provider, endpoint, response_key, payload in configs:
-        try:
-            body = _post_json(_LOCAL_OPENER, endpoint, payload, timeout)
-        except (OSError, ValueError, RecursionError) as exc:
-            messages.append(_provider_error(provider, exc))
-            continue
-        code = extract_python_code(body.get(response_key, ""))
-        if code and body.get("done_reason") != "length" and not body.get("truncated"):
-            return code, f"tier2_{provider}"
-        messages.append(f"{provider} không trả về mã hoàn chỉnh.")
+    # Guard against silent prompt truncation on a small local model.
+    if len(user_msg.encode("utf-8")) > 12_000:
+        messages.append("Đề quá dài cho chế độ AI cục bộ. Bôi đen một bài hoặc một phần mã ngắn hơn.")
+        return None
+
+    model = CONFIG.get("local_model")
+    if not isinstance(model, str) or model.casefold().endswith(("-cloud", ":cloud")) or "@cloud" in model.casefold():
+        messages.append("Chọn model Ollama được tải trên máy để dùng AI cục bộ.")
+        return None
+    payload = {
+        "model": model,
+        "system": system_prompt,
+        "prompt": user_msg,
+        "stream": False,
+        "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 2048},
+    }
+    try:
+        details = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/show", {"model": model}, 5.0)
+        if details.get("remote_host") or details.get("remote_model"):
+            messages.append("Model đã chọn dùng máy chủ từ xa. Hãy chọn model Ollama được tải trên máy.")
+            return None
+        body = _post_json(
+            _LOCAL_OPENER, _OLLAMA_URL + "/api/generate", payload,
+            float(CONFIG.get("local_timeout", 90.0)),
+        )
+    except HTTPError as exc:
+        if exc.code == 404:
+            messages.append(f"Ollama chưa có model {model}. Chạy setup_nhanh.bat --local hoặc tải đúng model đã chọn.")
+        else:
+            messages.append(_provider_error("Ollama", exc))
+        return None
+    except (URLError, TimeoutError, ConnectionError):
+        messages.append("Không kết nối được Ollama cục bộ hoặc hết thời gian chờ. Mở Ollama và thử lại.")
+        return None
+    except (OSError, ValueError, RecursionError):
+        messages.append("Ollama trả dữ liệu không đọc được. Kiểm tra ứng dụng Ollama rồi thử lại.")
+        return None
+
+    code = extract_python_code(body.get("response", ""))
+    if body.get("done") is True and body.get("done_reason") not in ("length", "load") and code:
+        return code, "tier2_ollama"
+    messages.append("Ollama chưa trả mã hoàn chỉnh. Thử yêu cầu ngắn hơn hoặc chọn model khác.")
     return None

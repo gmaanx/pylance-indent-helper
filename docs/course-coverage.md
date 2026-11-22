@@ -4,7 +4,7 @@ Mỗi dòng `# @solve` dưới đây là một bài độc lập. Bôi đen mộ
 
 | Nguồn đã đối chiếu | Nhóm bài trong tool |
 | --- | --- |
-| Buổi 1 và slide Python cơ bản | Hàm tính tổng chẵn/lẻ, generator Fibonacci, phép toán vector, khử dấu và đếm ký tự để tính cosine |
+| Buổi 1 và slide Python cơ bản | Hàm tính tổng chẵn/lẻ, generator Fibonacci, lớp Vector24 và Diem3D, phép toán vector, khử dấu và đếm ký tự để tính cosine |
 | Thư mục buổi 2 | Thư mục trống trong bản tài liệu hiện có |
 | Buổi 3 | Chưa tìm thấy thư mục. Phần tìm kiếm cơ bản lấy phạm vi từ slide Chương 3 |
 | Buổi 4 và Chương 3–4 | BFS/UCS/DFS/DLS/IDS/Greedy/A* theo dữ liệu khai báo, sinh xâu, 8-puzzle, đối chiếu số ô sai và Manhattan, vết hill climbing |

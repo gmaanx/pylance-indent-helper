@@ -379,6 +379,14 @@ def _read_problem(prompt, target_skeleton_id):
         return problem
 
     normalized = re.sub(r"\s+", " ", strip_accents(prompt).casefold()).strip()
+    geometry_names = re.search(r"\blop\s+(vector24|diem3d)\b", normalized)
+    if geometry_names:
+        class_type = geometry_names.group(1)
+        raise OfflineProblemError(
+            "needs_input",
+            "Offline chưa xác nhận được toàn bộ yêu cầu cho lớp này. "
+            f'Để lấy phiên bản cơ bản, dùng @solve {{"type":"{class_type}"}}.',
+        )
     if "dong nuoc" in normalized:
         match = _JUGS_PATTERN.fullmatch(normalized)
         if match is None:
@@ -639,6 +647,7 @@ def solve_spec(problem: object) -> OfflineSolution:
     from .offline_course_csp import COURSE_CSP_SOLVERS
     from .offline_course_logic import COURSE_LOGIC_SOLVERS
     from .offline_course_search import COURSE_SEARCH_SOLVERS
+    from .offline_geometry_classes import GEOMETRY_CLASS_SOLVERS
     from .offline_knowledge import KNOWLEDGE_SOLVERS
     from .offline_learning import LEARNING_SOLVERS
     from .offline_local_search import LOCAL_SEARCH_SOLVERS
@@ -663,6 +672,7 @@ def solve_spec(problem: object) -> OfflineSolution:
         **COMBINATORIAL_SOLVERS, **LEARNING_SOLVERS,
         **AGENT_SOLVERS, **COURSE_CSP_SOLVERS, **COURSE_LOGIC_SOLVERS,
         **COURSE_SEARCH_SOLVERS, **KNOWLEDGE_SOLVERS, **PYTHON_BASICS_SOLVERS,
+        **GEOMETRY_CLASS_SOLVERS,
         **UNCERTAINTY_SOLVERS, **LOCAL_SEARCH_SOLVERS,
         **SIMPLEAI_CSP_SOLVERS, **SIMPLEAI_SEARCH_SOLVERS, **SIMPLEAI_LOCAL_SOLVERS,
     }

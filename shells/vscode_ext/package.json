@@ -2,7 +2,7 @@
   "name": "pylance-indent-helper",
   "displayName": "Trợ lý bài tập Python",
   "description": "Giải bài tập Python được hỗ trợ offline và xem trước đề xuất sửa code.",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "publisher": "ms-python-tools",
   "engines": {
     "vscode": "^1.75.0"
@@ -34,6 +34,21 @@
       {
         "command": "pylanceIndentHelper.silentFix",
         "title": "Kiểm tra và đề xuất sửa Python offline",
+        "category": "Bài tập Python"
+      },
+      {
+        "command": "pylanceIndentHelper.localAi",
+        "title": "Phân tích với AI cục bộ",
+        "category": "Bài tập Python"
+      },
+      {
+        "command": "pylanceIndentHelper.runSavedFile",
+        "title": "Chạy file đã lưu bằng Python của công cụ",
+        "category": "Bài tập Python"
+      },
+      {
+        "command": "pylanceIndentHelper.showPythonRuntime",
+        "title": "Xem môi trường Python của công cụ",
         "category": "Bài tập Python"
       },
       {
@@ -72,6 +87,11 @@
       {
         "command": "pylanceIndentHelper.silentFix",
         "key": "alt+4",
+        "when": "editorTextFocus && editorLangId == python && !editorReadonly && !inDiffEditor"
+      },
+      {
+        "command": "pylanceIndentHelper.localAi",
+        "key": "alt+5",
         "when": "editorTextFocus && editorLangId == python && !editorReadonly && !inDiffEditor"
       },
       {

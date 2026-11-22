@@ -141,13 +141,12 @@ def test_copy_paste_exam_comments() -> None:
         ),
     ]
 
-    for prompt, expected_sid, expected_snippet in exam_prompts:
+    for prompt, _, _ in exam_prompts:
         resp = process_request(prompt, action_mode="instant", verify_shadow=True)
-        assert resp.validation_status == "reference", f"[FAIL] Expected a reference: {prompt}\nErr: {resp.error_detail}"
+        assert resp.validation_status in ("unsupported", "needs_input"), prompt
         assert not resp.verified_ok
-        assert expected_sid in resp.tier_used, f"[FAIL] Expected {expected_sid}, got {resp.tier_used}"
-        assert expected_snippet in resp.code, f"[FAIL] Expected '{expected_snippet}' in generated code for {expected_sid}"
-        print(f"  [OK] Copy-Paste -> {resp.tier_used:<38} | Reference in {resp.elapsed_sec*1000:5.1f} ms")
+        assert not resp.code, f"[FAIL] Returned unrelated code for: {prompt}"
+    print(f"  [OK] {len(exam_prompts)} incomplete or unsupported requests did not select a keyword reference")
 
 
 def test_static_ast_auto_healer_traps() -> None:

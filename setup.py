@@ -18,6 +18,7 @@ from go_cai_dat import (
     run_ide_cli,
     stop_daemon_processes,
 )
+from setup_lab.local_ai import DEFAULT_MODEL, check_local_ai, normalize_model, prepare_local_ai
 from shells.vscode_ext.pack_vsix import build_vsix
 
 
@@ -137,7 +138,21 @@ def smoke_test(python: Path, runtime: Path, profile: str = "simpleai") -> None:
         raise RuntimeError("Kiem tra offline khong tao duoc loi giai da xac minh.")
 
 
-def install_all(ide_cli: Path | None, bootstrap: Path, profile: str = "simpleai") -> None:
+def _save_runtime(root: Path, runtime: Path, config: dict) -> None:
+    staging = runtime / "runtime.json"
+    try:
+        staging.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+        staging.replace(root / "runtime.json")
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def install_all(
+    ide_cli: Path | None,
+    bootstrap: Path,
+    profile: str = "simpleai",
+    local_model: str | None = None,
+) -> None:
     root = install_root()
     with install_lock(root):
         root.mkdir(exist_ok=True)
@@ -173,9 +188,10 @@ def install_all(ide_cli: Path | None, bootstrap: Path, profile: str = "simpleai"
                 "ides": ides,
                 "manualExtension": ide_cli is None or previous.get("manualExtension", False),
             }
-            config_staging = runtime / "runtime.json"
-            config_staging.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
-            config_staging.replace(root / "runtime.json")
+            for field in ("localModel", "localOllamaExecutable"):
+                if isinstance(previous.get(field), str):
+                    config[field] = previous[field]
+            _save_runtime(root, runtime, config)
             installed = True
             (root / ".uninstalling").unlink(missing_ok=True)
         finally:
@@ -194,6 +210,14 @@ def install_all(ide_cli: Path | None, bootstrap: Path, profile: str = "simpleai"
         if ide_cli is None:
             print(f"Cai extension trong IDE qua Extensions > Install from VSIX: {vsix}")
         print("Neu IDE dang mo, dung Reload Window de nap ban moi.")
+        if local_model is not None:
+            try:
+                optional = prepare_local_ai(local_model)
+                config.pop("localOllamaExecutable", None)
+                _save_runtime(root, runtime, {**config, **optional})
+            except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                raise RuntimeError(f"Da cai ban co ban. Local AI chua san sang. {exc}") from exc
+            print(f"[OK] Local AI san sang voi {optional['localModel']}.")
 
 
 def main() -> int:
@@ -202,15 +226,22 @@ def main() -> int:
     parser.add_argument("--ide-cli", type=Path, help="Duong dan day du den CLI cua IDE.")
     parser.add_argument("--profile", choices=DEPENDENCIES, default="simpleai", help="simpleai gon nhe; full them miniKanren va SymPy.")
     parser.add_argument("--check", action="store_true", help="Kiem tra Python, goi offline va CLI.")
+    parser.add_argument("--local", action="store_true", help="Cai tuy chon Local AI voi Ollama.")
+    parser.add_argument("--local-model", help=f"Model Ollama dung voi --local. Mac dinh {DEFAULT_MODEL}.")
     args = parser.parse_args()
+    if args.local_model is not None and not args.local:
+        parser.error("--local-model can dung cung --local.")
     try:
+        local_model = normalize_model(args.local_model or DEFAULT_MODEL) if args.local else None
         cli, python = check_install(args.ide, args.ide_cli, args.profile)
         if args.check:
             print(f"[OK] Python {sys.version.split()[0]}: {python}")
             print(f"[OK] Goi offline ({args.profile}): {WHEELS}")
             print(f"[OK] IDE: {cli or 'Cai VSIX tu menu Extensions'}")
+            if local_model is not None:
+                print(f"[OK] Local AI: {check_local_ai(local_model)}")
         else:
-            install_all(cli, python, args.profile)
+            install_all(cli, python, args.profile, local_model)
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"[LOI] Cai dat chua hoan tat. {exc}", file=sys.stderr)
         return 1

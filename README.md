@@ -1,41 +1,59 @@
 ﻿# Trợ lý bài tập Python
 
-Tiện ích Windows hỗ trợ luyện bài Python trong VS Code hoặc Antigravity. Bộ giải offline hỗ trợ 47 dạng bài có đặc tả. Các bài thực hành yêu cầu SimpleAI có bộ giải xuất mã dùng trực tiếp thư viện này. Các bộ giải còn lại chủ yếu dùng thư viện chuẩn Python. Trong bài thi, dùng các chế độ mà quy chế cho phép.
+Tiện ích Windows hỗ trợ luyện bài Python trong VS Code hoặc Antigravity. Bộ giải offline hỗ trợ 49 dạng bài có đặc tả. Dùng **Alt+1** cho bài có bộ giải, **Alt+3** để gửi đề tới API Cloud hoặc **Alt+5** để dùng Ollama trên máy. Trong bài thi, dùng các chế độ mà quy chế cho phép.
+
+- [Cài đặt trên Windows](#cài-đặt-offline)
+- [Thử một bài và chạy mã](#dùng-trong-ide)
+- [Bộ giải offline và ví dụ](#dùng-bộ-giải-offline)
+- [Lấy key và dùng API Cloud](#dùng-api-cloud-trong-ide-với-alt3)
+- [Cài Ollama và dùng AI cục bộ](#cài-và-dùng-ai-cục-bộ-với-alt5)
+- [Cập nhật, gỡ và xử lý lỗi](#cập-nhật-gỡ-và-xử-lý-lỗi)
 
 ## Cài đặt offline
 
-1. Chuẩn bị Python 3.10 trở lên và VS Code hoặc Antigravity.
-2. Giải nén gói Windows vào thư mục có thể ghi, rồi chạy [setup_nhanh.bat](setup_nhanh.bat). Nếu chạy từ mã nguồn, mở PowerShell trong thư mục repo và dùng lệnh bên dưới.
-3. Trong IDE đang mở, bấm **Ctrl+Shift+P → Reload Window**. Mở file Python và thử một ví dụ ở phần dưới.
+1. Chuẩn bị Python 3.10 trở lên và VS Code hoặc Antigravity. Nếu vừa cài Python, mở lại PowerShell và kiểm tra bằng `py -3 --version` hoặc `python --version`. [Tải Python cho Windows](https://www.python.org/downloads/windows/)
+2. Giải nén gói cài Windows vào một thư mục có thể ghi. Nếu tải mã nguồn từ GitHub, chọn **Code → Download ZIP** rồi giải nén, hoặc dùng `git clone https://github.com/gmaanx/pylance-indent-helper.git`. Gói cài mang sẵn wheel cần thiết cho Offline.
+3. Nhấp đúp **setup_nhanh.bat**, hoặc mở PowerShell ngay trong thư mục chứa file và chạy lệnh bên dưới. [setup_nhanh.bat](setup_nhanh.bat)
+4. Khi cài xong, bấm **Ctrl+Shift+P → Reload Window** trong IDE đang mở để nạp extension. Nếu IDE đang đóng, mở nó sau khi cài.
 
 ```powershell
-py -3 setup.py
+.\setup_nhanh.bat
 ```
 
-Nếu máy có lệnh `python` trỏ đúng phiên bản, có thể dùng `python setup.py`. Trình cài chọn IDE có sẵn, tạo môi trường Python riêng, dùng các wheel đi kèm và kiểm tra chức năng trước khi báo hoàn tất. Có thể chỉ định IDE hoặc kiểm tra điều kiện cài trước.
+Trình cài chọn một IDE có CLI, tạo môi trường Python riêng và chạy thử một bài SimpleAI. Có thể dùng `py -3 setup.py` hoặc `python setup.py` nếu muốn gọi trực tiếp. Các lệnh sau kiểm tra điều kiện hoặc chỉ định IDE.
 
 ```powershell
-py -3 setup.py --check
-py -3 setup.py --ide vscode
-py -3 setup.py --ide antigravity
+.\setup_nhanh.bat --check
+.\setup_nhanh.bat --ide vscode
+.\setup_nhanh.bat --ide antigravity
 ```
 
-Nếu IDE không có CLI, chạy `py -3 setup.py --ide manual`, sau đó chọn **Extensions → Install from VSIX** và mở file VSIX mà trình cài in ra.
+Nếu IDE không có CLI, chạy `.\setup_nhanh.bat --ide manual`. Mở **Extensions → Install from VSIX** trong IDE, chọn file VSIX mà trình cài in ra, rồi tải lại cửa sổ.
 
 Gói mặc định chỉ kèm SimpleAI. Nếu cần chạy các mẫu cũ có `import kanren` hoặc `import sympy`, tạo gói với `py -3 setup_lab/build_release.py --full` và cài bằng `setup_nhanh.bat --profile full`. Lệnh `py -3 setup_lab/build_release.py` tạo gói mặc định. Cả hai ZIP nằm trong `dist/`.
 
-Để chạy code đã xuất trong IDE, chọn trình thông dịch Python tại đường dẫn trình cài in ra. Trong VS Code có Python extension, mở **Python: Select Interpreter** rồi chọn hoặc nhập đường dẫn này.
+Khi file cần SimpleAI mà Python đang chọn báo `ModuleNotFoundError`, lưu file rồi bấm **Ctrl+Shift+P** và chọn **Bài tập Python: Chạy file đã lưu bằng Python của công cụ**. Lệnh này chạy bằng môi trường đã cài thư viện và hiện kết quả trong Terminal. Muốn dùng nút Run của Python extension, mở **Bài tập Python: Xem môi trường Python của công cụ**, sao chép đường dẫn và chọn đường dẫn đó bằng **Python: Select Interpreter**.
 
 ## Dùng trong IDE
 
-Viết yêu cầu trong một file `.py`. Để xử lý riêng một đoạn, bôi đen đoạn đó trước khi chạy lệnh. Tool mở cửa sổ so sánh, trong đó bạn có thể xem dữ liệu, kết quả và thay đổi dự kiến. Chọn **Áp dụng** khi đã kiểm tra. Nếu tài liệu thay đổi trong lúc xử lý, chạy lại lệnh trên bản mới.
+1. Mở một file `.py` và dán đúng một dòng bên dưới. Để xử lý riêng một đoạn, bôi đen đoạn đó trước khi bấm phím tắt. Khi con trỏ không chọn vùng nào, lệnh đọc cả file.
+2. Bấm **Alt+1** và kiểm tra cửa sổ so sánh. Ví dụ này tạo lớp `Diem3D` bằng thư viện chuẩn Python.
+3. Chọn **Áp dụng** ở thông báo của IDE để cập nhật file. Nếu file hoặc vùng chọn đã thay đổi, chạy lại lệnh để tạo bản xem trước mới.
+4. Lưu bằng **Ctrl+S**. Nếu mã có đoạn chạy thử, chọn **Bài tập Python: Chạy file đã lưu bằng Python của công cụ** trong **Ctrl+Shift+P** để xem kết quả ở Terminal. Nếu mã chỉ định nghĩa lớp hoặc hàm, cần gọi lớp hoặc hàm để thấy kết quả.
+
+```python
+# @solve {"type":"diem3d"}
+```
+
+Sau khi áp dụng ví dụ, thêm `print(Diem3D(3, 4, 12).khoang_cach_goc())` ở cuối file, lưu và chạy để thấy kết quả `13.0`.
 
 | Phím | Lệnh |
 | --- | --- |
 | `Alt+1` | Giải offline từ yêu cầu hoặc dữ liệu có cấu trúc |
 | `Alt+2` | Phân tích offline |
-| `Alt+3` | Chọn nhà cung cấp và xác nhận yêu cầu Cloud |
+| `Alt+3` | Dùng API Cloud với key nhập trong phiên IDE |
 | `Alt+4` | Xem đề xuất sửa code offline |
+| `Alt+5` | Dùng model Ollama đã tải trên máy |
 | `Alt+0` | Mở xác nhận gỡ công cụ |
 
 Có thể tìm các lệnh trong **Ctrl+Shift+P**. Lệnh hủy hiện ở thông báo tiến độ khi đang xử lý. Bản cài dành cho IDE và các phím tạo code hoạt động khi đang soạn Python.
@@ -43,6 +61,14 @@ Có thể tìm các lệnh trong **Ctrl+Shift+P**. Lệnh hủy hiện ở thôn
 ## Dùng bộ giải offline
 
 Bộ giải đọc những câu mô tả đơn giản mà nó nhận diện được. Với dữ liệu dài hoặc cần kết quả có thể kiểm tra, viết một dòng comment `# @solve` chứa JSON. Đặt trong file riêng hoặc bôi đen đúng dòng đó trước khi chạy `Alt+1`.
+
+Offline chỉ mở bản xem trước khi nhận diện được đặc tả hoặc khi bạn gọi đích danh mẫu tham khảo. Khi đề có điều kiện chưa hỗ trợ, tool giữ nguyên file và hiển thị chẩn đoán. Hai ví dụ lớp Python được kiểm thử từ ảnh báo lỗi dùng thư viện chuẩn.
+
+```python
+# @solve {"type":"vector24"}
+```
+
+Lớp `Vector24` nhận 24 tọa độ, hỗ trợ phép cộng, `tich_vo_huong()` và `goc()` theo radian. Ví dụ `Vector24([1] * 24).tich_vo_huong(Vector24([2] * 24))` trả `48`.
 
 Xem bảng đối chiếu bài tập theo từng buổi và ví dụ dùng SimpleAI. [Phạm vi offline theo môn học](docs/course-coverage.md)
 
@@ -150,9 +176,22 @@ Mỗi dòng `@solve` là một ví dụ độc lập. Bôi đen một dòng trư
 
 **Đã giải theo đặc tả** nghĩa là bộ giải offline đã tính kết quả theo dữ liệu và quy tắc được hỗ trợ. Bài vượt giới hạn, có dữ liệu thiếu hoặc dùng ràng buộc chưa hỗ trợ sẽ có thông báo riêng. Mẫu tham khảo và đề xuất Cloud cần được đối chiếu với đề. **Đã kiểm tra cú pháp** xác nhận Python đọc được đoạn code.
 
-## Lấy và dùng API key
+## Dùng API Cloud trong IDE với Alt+3
 
-Cloud là lựa chọn theo từng yêu cầu. Trong IDE, bấm `Alt+3`, chọn hãng, nhập key tại ô che ký tự và xác nhận nội dung sẽ gửi. Key được giữ trong bộ nhớ của phiên IDE. Dùng lệnh **Quên API key phiên này** để xóa ngay. File cấu hình key kiểu cũ có thể vẫn nằm trong bản nguồn bạn từng dùng.
+1. Lấy API key từ nhà cung cấp theo một trong các hướng dẫn bên dưới.
+2. Mở file Python, nhập đề dưới dạng comment hoặc chọn đúng vùng cần xử lý.
+3. Bấm **Alt+3** hoặc chọn **Bài tập Python: Gửi yêu cầu đến Cloud** trong Command Palette. Chọn hãng, nhập key rồi xác nhận gửi vùng chọn hoặc toàn bộ file.
+4. Kiểm tra cửa sổ so sánh và chẩn đoán. Chỉ bấm **Áp dụng** khi kết quả phù hợp.
+
+Key được giữ trong bộ nhớ phiên IDE. Dùng **Quên API key phiên này** để xóa. File cấu hình key kiểu cũ có thể vẫn nằm trong bản nguồn bạn từng dùng.
+
+Để thử luồng API, tạo file Python mới, dán dòng sau và bấm **Alt+3**. Cùng một đề cũng có thể dùng để thử **Alt+5**.
+
+```python
+# Viết hàm chuan_hoa_ten(text) trả chuỗi đã bỏ khoảng trắng hai đầu và gộp các khoảng trắng liên tiếp thành một dấu cách. Thêm ví dụ với "  An   Bình  ".
+```
+
+Nếu đề đã khớp một bộ giải offline, công cụ có thể trả kết quả ngay sau khi xác nhận chế độ. Dòng trạng thái ghi nguồn kết quả.
 
 Cloud dùng tối đa hai lượt gọi cùng nhà cung cấp. Lượt sau rà bản nháp với nguyên văn đề, gồm dữ liệu, thuật toán, ràng buộc, định dạng kết quả và các ca biên. Tool tính độc lập tối đa bốn ca nhỏ do model trích từ đề. Nếu một dự đoán sai so với bộ giải, IDE giữ nguyên tệp và hiển thị mâu thuẫn. Phép đối chiếu chỉ áp dụng cho dữ kiện được trích và dự đoán của model. Mã Cloud giữ nhãn **Đã kiểm tra cú pháp** khi có bản đề xuất. Hai lượt gọi có thể dùng nhiều token hơn một lượt.
 
@@ -182,12 +221,35 @@ py -3 nhap_api_key.py --provider gemini
 
 Nếu Cloud trả lỗi, kiểm tra mạng, key, quyền truy cập model và giới hạn tài khoản. Có thể đặt ID model tương thích trong `%LOCALAPPDATA%\Programs\PylanceHelper\models.json`, ví dụ `{"gemini_model":"ID_MODEL_CUA_BAN"}`. File này dùng cho tùy chọn model. Nhập key qua ô nhập của IDE hoặc terminal ở trên.
 
+## Cài và dùng AI cục bộ với Alt+5
+
+Mở PowerShell tại thư mục đã giải nén và chạy:
+
+```powershell
+.\setup_nhanh.bat --local
+```
+
+Lựa chọn này dùng Ollama đã cài hoặc cài Ollama cho tài khoản hiện tại qua WinGet, rồi tải `qwen2.5-coder:1.5b` nếu máy chưa có. Bước cài đầu cần mạng. Model khoảng 986 MB và Ollama cần thêm dung lượng cho ứng dụng. Sau khi tải xong, mở Ollama, reload IDE rồi bấm **Alt+5**. [Cài Ollama trên Windows](https://docs.ollama.com/windows) · [Dung lượng model mặc định](https://ollama.com/library/qwen2.5-coder:1.5b)
+
+Có thể chọn model khác đã tải được trên máy bằng `.\setup_nhanh.bat --local --local-model TÊN_MODEL`. Nếu thiếu WinGet, cài Ollama từ trang chính thức rồi chạy lại lệnh. Nếu Ollama chưa chạy, mở ứng dụng trước khi bấm **Alt+5**. Công cụ ưu tiên bộ giải có đặc tả trước khi hỏi model. Bản nháp từ model cục bộ được kiểm tra cú pháp và cần đối chiếu với đề.
+
+Luồng cục bộ chỉ gửi nội dung tới Ollama ở `127.0.0.1:11434`. Khi ứng dụng đang chạy, có thể dùng `ollama list` để xem model đã tải. Dùng `.\setup_nhanh.bat --check --local` để kiểm tra điều kiện cài. Nếu bước tải model lỗi, phần Offline vẫn dùng được và bạn có thể chạy lại lệnh `--local` sau.
+
 ## Cập nhật, gỡ và xử lý lỗi
 
-- **Cập nhật** bằng cách chạy lại setup từ bản mới và dùng **Reload Window**. Nếu từng dùng bản cũ trên hai IDE, cập nhật hoặc gỡ riêng cho từng IDE.
-- **Gỡ cài đặt** bằng `Alt+0` hoặc [go_cai_dat.bat](go_cai_dat.bat). Nếu đã cài VSIX thủ công, mở **Extensions** để gỡ extension sau khi đã gỡ runtime. Reload các cửa sổ IDE đã nạp extension.
-- **Python không được nhận diện** thì chạy `py -3 --version` hoặc `python --version`. Nếu trình cài chưa nhận đúng IDE, dùng `--check` để xem điều kiện còn thiếu.
-- **Phím tắt không phản hồi** thì thử lệnh tương ứng trong **Ctrl+Shift+P** và kiểm tra **Keyboard Shortcuts**. Bản cài cũ cần reload để bỏ các phím đã nạp.
-- **Tool báo thiếu dữ liệu hoặc vượt giới hạn** thì xem chẩn đoán và thu nhỏ bài thử. Với ca có nhiều điều kiện, kiểm tra rằng từng điều kiện đều xuất hiện trong yêu cầu có cấu trúc.
+Cập nhật bằng cách chạy lại setup từ bản mới rồi chọn **Reload Window**. Nếu dùng Git, chạy `git pull --ff-only` trước khi chạy setup. Nếu dùng profile đầy đủ, thêm `--profile full` khi nâng cấp. Nếu đã cài ở hai IDE, cập nhật cho từng IDE.
+
+Gỡ bằng **Alt+0** hoặc chạy **go_cai_dat.bat**. Nếu cài VSIX thủ công, gỡ thêm extension trong **Extensions**, rồi tải lại các cửa sổ IDE. Ollama và model do ứng dụng Ollama quản lý riêng. [go_cai_dat.bat](go_cai_dat.bat)
+
+| Hiện tượng | Cách xử lý |
+| --- | --- |
+| `python` không được nhận diện | Kiểm tra `py -3 --version` hoặc `python --version`. Nếu chưa có Python phù hợp, cài Python 3.10 trở lên và mở lại terminal. |
+| Trình cài không thấy IDE | Chạy `.\setup_nhanh.bat --check`. Nếu IDE thiếu CLI, cài theo chế độ `--ide manual`. |
+| Phím tắt không phản hồi | Mở file `.py`, tải lại cửa sổ và thử lệnh qua **Ctrl+Shift+P**. Kiểm tra **Keyboard Shortcuts** nếu phím bị trùng. |
+| `SyntaxError` xuất hiện ở dòng đề bài | Đặt đề sau dấu `#`. Dùng phím của công cụ để tạo bản xem trước trước khi chạy file Python. |
+| `ModuleNotFoundError: No module named 'simpleai'` | Lưu file và chọn **Chạy file đã lưu bằng Python của công cụ**. Với `kanren` hoặc `sympy`, dùng gói đầy đủ và profile `full`. |
+| Offline báo thiếu dữ liệu hoặc ngoài phạm vi | Đối chiếu kiểu `@solve`, dữ liệu và ràng buộc hoặc thử **Alt+5** hay **Alt+3** cho câu hỏi tự do. |
+| API báo `401`, `403` hoặc `429` | Kiểm tra key, quyền truy cập model hoặc hạn mức của hãng. Dùng lệnh **Quên API key phiên này** để nhập key mới. |
+| Ollama không kết nối được hoặc thiếu model | Mở Ollama, kiểm tra `ollama list`, sau đó chạy lại `.\setup_nhanh.bat --local` nếu cần tải model. |
 
 Xem [mã bộ xử lý](core_engine), [extension](shells/vscode_ext) và [kiểm thử](tests).

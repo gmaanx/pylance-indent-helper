@@ -17,6 +17,7 @@ INCLUDE = (
     "nhap_api_key.bat",
     "setup_lab/deploy_usb.bat",
     "setup_lab/deploy_oneliner.ps1",
+    "setup_lab/local_ai.py",
     "shells/vscode_ext/pack_vsix.py",
     "shells/vscode_ext/package.json",
     "shells/vscode_ext/src/*.js",

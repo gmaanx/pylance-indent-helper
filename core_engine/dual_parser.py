@@ -15,6 +15,8 @@ import tokenize
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from .golden_skeletons import strip_accents
+
 
 DSL_TAG_TO_CATEGORY = {
     "@search": "search",
@@ -148,15 +150,13 @@ _IGNORED_COMMENT_PREFIXES = (
     "-*- coding",
     "[alt+",
     "[dang ",
-    "kq:",
-    "===",
-    "---",
 )
+_PROSE_HEADING = re.compile(r"^(?:bai\s+[0-9]+(?:\.[0-9]+)*\s*:|de bai\b|(?:viet|tao)(?: mot)? lop\b)")
 
 
 def _is_system_status_comment(line_content: str) -> bool:
     low = line_content.strip().lower()
-    if not low:
+    if not low or all(character in "=- " for character in low):
         return True
     return any(low.startswith(prefix) for prefix in _IGNORED_COMMENT_PREFIXES)
 
@@ -168,6 +168,11 @@ def _extract_comments_and_code(raw_text: str) -> Tuple[str, str]:
     prompt_lines = set()
     if re.match(r"^@solve\b", raw_text, re.IGNORECASE):
         return raw_text, ""
+
+    # A pasted request may start with prose and continue with comment bullets.
+    # Keep the original ordering in that case so every requirement is matched.
+    if _PROSE_HEADING.match(strip_accents(lines[0]).casefold()):
+        return "\n".join(line.lstrip().lstrip("#").strip() for line in lines).strip(), ""
 
     try:
         bracket_depth = 0
@@ -242,7 +247,10 @@ def parse_user_input(raw_text: str, force_mode: Optional[str] = None) -> ParsedI
         )
 
     # 2. Neu ep che do Self-Fix (Alt + 4) va co code Python de sua
-    has_code_to_fix = existing_code.strip() or not cleaned_raw.startswith(("#", '"""', "'''"))
+    has_code_to_fix = existing_code.strip() or (
+        not cleaned_raw.startswith(("#", '"""', "'''")) and comment_text == cleaned_raw
+        and not _PROSE_HEADING.match(strip_accents(cleaned_raw).casefold())
+    )
     if force_mode == "self_fix" and has_code_to_fix:
         return ParsedInput(
             mode="self_fix",

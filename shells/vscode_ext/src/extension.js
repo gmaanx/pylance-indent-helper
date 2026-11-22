@@ -9,6 +9,9 @@ const PREFIX = 'pylanceIndentHelper.';
 const PREVIEW_SCHEME = 'python-practice-preview';
 const RUNNING_CONTEXT = PREFIX + 'running';
 const APPLY = 'Áp dụng';
+const PYTHON_RUNTIME_INFO = 'Xem môi trường Python';
+const COPY_PYTHON_PATH = 'Sao chép đường dẫn';
+const RUN_SAVED_FILE = 'Chạy file đã lưu bằng Python của công cụ';
 const INSTALL_MESSAGE = 'Chạy setup_nhanh.bat rồi tải lại cửa sổ để nạp bộ xử lý Python.';
 const PROVIDERS = [
   { label: 'Gemini', id: 'gemini' },
@@ -17,6 +20,9 @@ const PROVIDERS = [
   { label: 'OpenRouter', id: 'openrouter' },
   { label: 'OpenAI', id: 'openai' }
 ];
+const TASK_ENV = Object.fromEntries(
+  [...PROVIDERS.map(({ id }) => id.toUpperCase() + '_API_KEY'), 'GOOGLE_API_KEY'].map((name) => [name, ''])
+);
 const STATUS_LABELS = {
   verified: 'Đã giải theo đặc tả',
   syntax_checked: 'Đã kiểm tra cú pháp',
@@ -174,6 +180,73 @@ function resultMessage(response) {
   return [statusLabel(response), summary, ...details].filter(Boolean).join(' · ').slice(0, 500);
 }
 
+function knownDependencies(code) {
+  const dependencies = new Set();
+  for (const match of code.matchAll(/^\s*(?:from\s+(\w+)(?:\.\w+)*\s+import\b|import\s+([^#\r\n]+))/gm)) {
+    const modules = match[1] ? [match[1]] : match[2].split(',').map((part) => part.trim().split(/[.\s]/, 1)[0]);
+    for (const name of modules) {
+      if (['simpleai', 'kanren', 'sympy'].includes(name)) dependencies.add(name);
+    }
+  }
+  return [...dependencies];
+}
+
+function runtimePackages(runtime) {
+  return runtime.dependencyProfile === 'full' ? ['simpleai', 'kanren', 'sympy'] : ['simpleai'];
+}
+
+async function showPythonRuntime() {
+  try {
+    const runtime = getRuntime();
+    if (!runtimeReady(runtime)) throw new Error(INSTALL_MESSAGE);
+    const action = await vscode.window.showInformationMessage(
+      'Python của công cụ đã cài ' + runtimePackages(runtime).join(', ') + '.',
+      {
+        modal: true,
+        detail: runtime.python + '\n\nCó thể chọn đường dẫn này bằng lệnh Python: Select Interpreter, hoặc dùng lệnh "' + RUN_SAVED_FILE + '".'
+      },
+      COPY_PYTHON_PATH
+    );
+    if (action === COPY_PYTHON_PATH) await vscode.env.clipboard.writeText(runtime.python);
+  } catch (error) {
+    await vscode.window.showErrorMessage(error.message);
+  }
+}
+
+async function runSavedFile() {
+  if (uninstalling || disabled) return;
+  const document = vscode.window.activeTextEditor?.document;
+  const file = document?.uri.fsPath;
+  if (!document || document.uri.scheme !== 'file' || document.languageId !== 'python' ||
+      !path.isAbsolute(file || '') || path.extname(file).toLowerCase() !== '.py' || !fs.existsSync(file)) {
+    await vscode.window.showWarningMessage('Mở file .py đã lưu để chạy bằng Python của công cụ.');
+    return;
+  }
+  if (document.isDirty) {
+    await vscode.window.showWarningMessage('Lưu các thay đổi của file .py rồi chạy lại lệnh này.');
+    return;
+  }
+  if (!vscode.workspace.isTrusted) {
+    await vscode.window.showWarningMessage('IDE đang ở Restricted Mode. Lệnh chạy file cần một workspace đáng tin cậy.');
+    return;
+  }
+
+  try {
+    const runtime = getRuntime();
+    if (!runtimeReady(runtime)) throw new Error(INSTALL_MESSAGE);
+    const args = ['-X', 'utf8', file];
+    const execution = new vscode.ProcessExecution(runtime.python, args, { cwd: path.dirname(file), env: TASK_ENV });
+    const task = new vscode.Task(
+      { type: 'process', command: runtime.python, args },
+      vscode.TaskScope.Global, 'Chạy ' + path.basename(file), 'Bài tập Python', execution, []
+    );
+    task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, focus: true };
+    await vscode.tasks.executeTask(task);
+  } catch (error) {
+    await vscode.window.showErrorMessage(error.message);
+  }
+}
+
 async function offerApply(preview) {
   const { snapshot, response, runtime, code } = preview;
   try {
@@ -187,7 +260,19 @@ async function offerApply(preview) {
     edit.replace(snapshot.document.uri, snapshot.range, code);
     const applied = await vscode.workspace.applyEdit(edit);
     if (applied) {
-      await vscode.window.showInformationMessage('Đã áp dụng thay đổi. Dùng Hoàn tác để khôi phục nội dung trước đó.');
+      const dependencies = knownDependencies(code);
+      if (!dependencies.length) {
+        await vscode.window.showInformationMessage('Đã áp dụng thay đổi. Dùng Hoàn tác để khôi phục nội dung trước đó.');
+        return;
+      }
+      const missing = dependencies.filter((name) => !runtimePackages(runtime).includes(name));
+      const help = missing.length
+        ? 'Bản cài hiện tại thiếu ' + missing.join(', ') + '. Có thể cài lại bằng setup.py --profile full.'
+        : 'Lưu file rồi dùng lệnh "' + RUN_SAVED_FILE + '" khi Python của IDE thiếu thư viện.';
+      const action = await vscode.window.showInformationMessage(
+        'Đã áp dụng thay đổi. Mã dùng ' + dependencies.join(', ') + '. ' + help, PYTHON_RUNTIME_INFO
+      );
+      if (action === PYTHON_RUNTIME_INFO) await showPythonRuntime();
     } else {
       await vscode.window.showWarningMessage('IDE không áp dụng được thay đổi. Mở lại file rồi thử lại.');
     }
@@ -231,7 +316,7 @@ async function showPreview(snapshot, response, runtime, signal) {
   void offerApply(preview);
 }
 
-async function requestSuggestion(mode, useCloud = false) {
+async function requestSuggestion(mode, provider = 'offline') {
   if (disabled || uninstalling) return;
   if (activeOperation) {
     await vscode.window.showInformationMessage('Hãy hoàn tất hoặc hủy yêu cầu đang mở.');
@@ -269,6 +354,8 @@ async function requestSuggestion(mode, useCloud = false) {
     runtime = getRuntime();
     if (!runtimeReady(runtime)) throw new Error(INSTALL_MESSAGE);
 
+    const useCloud = provider === 'cloud';
+    const useLocal = provider === 'local';
     let credentials;
     if (useCloud) {
       const session = await chooseCredentials();
@@ -293,7 +380,7 @@ async function requestSuggestion(mode, useCloud = false) {
       mode,
       verify: true,
       allow_cloud: useCloud,
-      allow_local: false,
+      allow_local: useLocal,
       credentials
     });
     await vscode.commands.executeCommand('setContext', RUNNING_CONTEXT, true);
@@ -304,7 +391,7 @@ async function requestSuggestion(mode, useCloud = false) {
     try {
       reply = await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
-        title: useCloud ? 'Đang xử lý yêu cầu Cloud' : 'Đang xử lý offline',
+        title: useCloud ? 'Đang xử lý yêu cầu Cloud' : useLocal ? 'Đang xử lý với AI cục bộ' : 'Đang xử lý offline',
         cancellable: true
       }, async (_progress, token) => {
         const cancelListener = token.onCancellationRequested(() => operation.abort());
@@ -411,8 +498,11 @@ function activate(context) {
     }),
     vscode.commands.registerCommand(PREFIX + 'instantFormat', () => requestSuggestion('instant')),
     vscode.commands.registerCommand(PREFIX + 'deepFormat', () => requestSuggestion('full')),
-    vscode.commands.registerCommand(PREFIX + 'ghostMode', () => requestSuggestion('full', true)),
+    vscode.commands.registerCommand(PREFIX + 'ghostMode', () => requestSuggestion('full', 'cloud')),
     vscode.commands.registerCommand(PREFIX + 'silentFix', () => requestSuggestion('self_fix')),
+    vscode.commands.registerCommand(PREFIX + 'localAi', () => requestSuggestion('full', 'local')),
+    vscode.commands.registerCommand(PREFIX + 'runSavedFile', runSavedFile),
+    vscode.commands.registerCommand(PREFIX + 'showPythonRuntime', showPythonRuntime),
     vscode.commands.registerCommand(PREFIX + 'uninstallAll', uninstall),
     vscode.commands.registerCommand(PREFIX + 'cancelGhost', () => activeOperation?.abort()),
     vscode.commands.registerCommand(PREFIX + 'forgetSessionKeys', () => {

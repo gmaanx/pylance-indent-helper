@@ -14,6 +14,11 @@ function harness({
   text = '# Bài mẫu',
   selected,
   noEditor = false,
+  fileName = path.resolve('tệp thử nghiệm.py'),
+  scheme = 'file',
+  isDirty = false,
+  isTrusted = true,
+  dependencyProfile = 'simpleai',
   missingUninstaller = false
 } = {}) {
   const localAppData = path.resolve('test-profile');
@@ -26,6 +31,7 @@ function harness({
   const uninstallScript = path.join(engineRoot, 'go_cai_dat.py');
   const files = new Set([entry, cli, runtimePath, python, uninstallPython]);
   if (!missingUninstaller) files.add(uninstallScript);
+  if (scheme === 'file') files.add(fileName);
 
   const children = [];
   const edits = [];
@@ -33,6 +39,8 @@ function harness({
   const notices = [];
   const contexts = [];
   const prompts = [];
+  const tasks = [];
+  const clipboardWrites = [];
   const timers = new Set();
   const commands = new Map();
   const state = {
@@ -43,10 +51,11 @@ function harness({
   };
   let previewProvider;
   let uriIndex = 0;
-  const uri = (scheme, pathname) => ({ scheme, toString: () => scheme + ':' + pathname });
+  const uri = (scheme, pathname) => ({ scheme, fsPath: pathname, toString: () => scheme + ':' + pathname });
   const document = {
-    uri: uri('file', '/test.py'),
-    fileName: 'test.py',
+    uri: uri(scheme, fileName),
+    fileName,
+    isDirty,
     languageId: 'python',
     eol: 2,
     version: 1,
@@ -77,7 +86,22 @@ function harness({
     Uri: { from: ({ scheme, path: pathname }) => uri(scheme, pathname) },
     EndOfLine: { CRLF: 2 },
     ProgressLocation: { Notification: 1 },
+    TaskScope: { Global: 1 },
+    TaskRevealKind: { Always: 1 },
+    Task: class Task {
+      constructor(definition, scope, name, source, execution) {
+        Object.assign(this, { definition, scope, name, source, execution });
+      }
+    },
+    ProcessExecution: class ProcessExecution {
+      constructor(executable, args, options) {
+        Object.assign(this, { executable, args, options });
+      }
+    },
+    tasks: { executeTask: async (task) => { tasks.push(task); } },
+    env: { clipboard: { writeText: async (value) => { clipboardWrites.push(value); } } },
     workspace: {
+      isTrusted,
       registerTextDocumentContentProvider: (_scheme, provider) => {
         previewProvider = provider;
         return disposable;
@@ -90,8 +114,9 @@ function harness({
     },
     window: {
       activeTextEditor: noEditor ? undefined : editor,
-      showInformationMessage: async (message, action) => {
-        notices.push({ kind: 'info', message });
+      showInformationMessage: async (message, action, command) => {
+        notices.push({ kind: 'info', message, detail: action?.detail });
+        if (command === 'Sao chép đường dẫn') return state.copyRuntime;
         return action === 'Áp dụng' && state.confirmPreview ? state.confirmPreview() : state.apply;
       },
       showWarningMessage: async (message, options, action) => {
@@ -144,7 +169,7 @@ function harness({
           readFileSync(file) {
             assert.equal(file, runtimePath);
             if (!files.has(file)) throw new Error('missing runtime');
-            return JSON.stringify({ engineRoot, python, uninstallPython });
+            return JSON.stringify({ engineRoot, python, uninstallPython, dependencyProfile });
           }
         };
       }
@@ -174,8 +199,8 @@ function harness({
   const extension = sandbox.module.exports;
   extension.activate({ subscriptions: [] });
   return {
-    state, document, editor, files, cli, runtimePath, marker, engineRoot, uninstallPython,
-    children, edits, diffs, notices, contexts, prompts, timers, extension,
+    state, document, editor, files, cli, runtimePath, marker, engineRoot, uninstallPython, python,
+    children, edits, diffs, notices, contexts, prompts, timers, extension, tasks, clipboardWrites,
     run: (name) => commands.get('pylanceIndentHelper.' + name)()
   };
 }
@@ -184,6 +209,69 @@ function finish(child, code = 'print("Đáp án")', options = {}) {
   child.stdout.emit('data', JSON.stringify({ code, validation_status: 'verified', ...options }));
   child.emit('close', 0);
 }
+
+test('Alt+5 requests Local AI without credentials or Cloud and opens a preview', async () => {
+  const packageJson = require('../shells/vscode_ext/package.json');
+  assert.ok(packageJson.contributes.keybindings.some(({ command, key }) => command === 'pylanceIndentHelper.localAi' && key === 'alt+5'));
+  const h = harness();
+  const pending = h.run('localAi');
+  await flush();
+  assert.deepEqual(JSON.parse(h.children[0].input), {
+    text: '# Bài mẫu', mode: 'full', verify: true, allow_cloud: false, allow_local: true
+  });
+  assert.equal(h.prompts.length, 0);
+  finish(h.children[0]);
+  await pending;
+  assert.equal(h.diffs.length, 1);
+  assert.equal(h.tasks.length, 0);
+});
+
+test('saved-file command launches a native task with the tool interpreter and file as a separate argument', async () => {
+  const h = harness();
+  await h.run('runSavedFile');
+  assert.equal(h.tasks.length, 1);
+  const [task] = h.tasks;
+  assert.equal(task.execution.executable, h.python);
+  assert.deepEqual([...task.execution.args], ['-X', 'utf8', h.document.fileName]);
+  assert.equal(task.execution.options.cwd, path.dirname(h.document.fileName));
+  assert.equal(task.execution.options.env.OPENAI_API_KEY, '');
+  assert.equal(task.execution.options.env.GOOGLE_API_KEY, '');
+  assert.equal(task.presentationOptions.reveal, 1);
+  assert.equal(h.children.length, 0);
+});
+
+test('saved-file command rejects dirty files, previews, and restricted workspaces', async () => {
+  for (const [options, message] of [
+    [{ isDirty: true }, /Lưu các thay đổi/],
+    [{ scheme: 'python-practice-preview' }, /Mở file .py đã lưu/],
+    [{ isTrusted: false }, /Restricted Mode/]
+  ]) {
+    const h = harness(options);
+    await h.run('runSavedFile');
+    assert.equal(h.tasks.length, 0);
+    assert.match(h.notices.at(-1).message, message);
+  }
+});
+
+test('Apply surfaces package guidance and the runtime command only copies a path when requested', async () => {
+  const h = harness();
+  h.state.apply = 'Áp dụng';
+  const pending = h.run('instantFormat');
+  await flush();
+  finish(h.children[0], 'from simpleai.search import SearchProblem\nimport sympy');
+  await pending;
+  await flush();
+  assert.match(h.notices.at(-1).message, /thiếu sympy.*--profile full/);
+  assert.equal(h.tasks.length, 0);
+
+  await h.run('showPythonRuntime');
+  assert.match(h.notices.at(-1).message, /đã cài simpleai/);
+  assert.ok(h.notices.at(-1).detail.includes(h.python));
+  assert.deepEqual(h.clipboardWrites, []);
+  h.state.copyRuntime = 'Sao chép đường dẫn';
+  await h.run('showPythonRuntime');
+  assert.deepEqual(h.clipboardWrites, [h.python]);
+});
 
 test('offline selection uses only selected input, previews whole diff, and edits selection only on Apply', async () => {
   const text = 'before\r\n# selected\r\nafter';

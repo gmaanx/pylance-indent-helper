@@ -11,9 +11,12 @@ from .brain_router import (
 )
 from .cloud_review import review_cloud_draft, syntax_error as _syntax_error
 from .dual_parser import parse_user_input
-from .golden_skeletons import ALL_SKELETONS, RETRIEVER, customize_skeleton_with_prompt
+from .golden_skeletons import ALL_SKELETONS, customize_skeleton_with_prompt
 from .offline_solver import OfflineProblemError, solve_offline
 from .shadow_runner_healer import static_auto_heal_preserve_style
+
+
+_SUGGEST_MODEL = "Có thể thử Alt+5 (Ollama cục bộ) hoặc Alt+3 (Cloud) để lấy bản nháp."
 
 
 @dataclass
@@ -28,14 +31,18 @@ class EngineResponse:
     diagnostics: Tuple[str, ...] = ()
 
 
-def _references(parsed, top_k=2):
-    if parsed.target_skeleton_id in ALL_SKELETONS:
-        return [ALL_SKELETONS[parsed.target_skeleton_id]]
-    prompt = parsed.prompt_text.strip()
-    if not prompt:
-        return []
-    candidates = RETRIEVER.retrieve(prompt, top_k=top_k, category_filter=parsed.category)
-    return [item for item in candidates if item["score"] >= 5.0]
+def _explicit_reference(parsed):
+    if parsed.mode != "dsl":
+        return None
+    sample = ALL_SKELETONS.get(parsed.target_skeleton_id)
+    if sample is None or sample.get("category") != parsed.category:
+        return None
+    if "\n" in parsed.prompt_text or set(parsed.dsl_params) - {"bai"}:
+        return None
+    tokens = parsed.prompt_text.split()
+    if len(tokens) != 2:
+        return None
+    return sample
 
 
 def process_request(
@@ -64,7 +71,12 @@ def process_request(
                 "syntax_checked": "Đã kiểm tra cú pháp",
                 "reference": "Mẫu tham khảo",
             }
-            action_label = "Cloud" if tier.startswith("tier1_") else header_labels.get(action_mode, "Python Helper")
+            if tier.startswith("tier1_"):
+                action_label = "Cloud"
+            elif tier.startswith("tier2_"):
+                action_label = "AI cục bộ"
+            else:
+                action_label = header_labels.get(action_mode, "Python Helper")
             code = f"# [{action_label} | {tier} | {labels[status]}]\n{code.rstrip()}\n"
         return EngineResponse(
             code=code,
@@ -106,7 +118,6 @@ def process_request(
                     summary=solution.summary, notes=(solution.summary, *solution.diagnostics),
                 )
 
-    references = _references(parsed)
     syntax_problem = _syntax_error(parsed.existing_code) if parsed.mode == "self_fix" else ""
     if parsed.mode == "self_fix" and not syntax_problem and not allow_cloud:
         suggested = static_auto_heal_preserve_style(parsed.existing_code)
@@ -118,10 +129,9 @@ def process_request(
 
     if action_mode != "instant" and parsed.mode not in ("structured", "dsl"):
         candidate = None
-        prompt = parsed.prompt_text or "Hãy rà soát và sửa mã Python đã gửi, giữ nguyên yêu cầu của chương trình."
         if allow_cloud:
             system_prompt, user_msg = build_context_injected_prompt(
-                raw_text, references, error_traceback=syntax_problem,
+                raw_text, [], error_traceback=syntax_problem,
             )
             candidate = call_tier1_cloud_llm(system_prompt, user_msg, diagnostics=diagnostics, max_attempts=1)
             if candidate is not None:
@@ -132,7 +142,7 @@ def process_request(
                 candidate = (reviewed, tier)
         if candidate is None and allow_local:
             candidate = call_tier2_local_llm(
-                prompt, references[0] if references else None, parsed.existing_code, diagnostics=diagnostics,
+                raw_text, None, diagnostics=diagnostics,
             )
         if candidate is not None:
             code, tier = candidate
@@ -145,12 +155,12 @@ def process_request(
             )
 
     if offline_error is not None:
-        return finish(offline_error.status, "offline_solver", error=str(offline_error))
+        return finish(offline_error.status, "offline_solver", error=str(offline_error), notes=(_SUGGEST_MODEL,))
     if parsed.mode == "self_fix":
         error = syntax_problem or "Mã này qua kiểm tra cú pháp. Cần lỗi cụ thể hoặc bộ test để tìm vấn đề logic."
         return finish("invalid" if syntax_problem else "unsupported", "self_fix", error=error)
-    if references:
-        sample = references[0]
+    sample = _explicit_reference(parsed)
+    if sample:
         code = customize_skeleton_with_prompt(sample["id"], sample["code"], parsed.prompt_text, parsed.dsl_params)
         return finish(
             "reference", f"tier3_offline({sample['id']})", code,
@@ -158,5 +168,6 @@ def process_request(
         )
     return finish(
         "unsupported", "no_match",
-        error="Chưa tìm được dạng bài phù hợp. Hãy bổ sung dữ liệu, ràng buộc và kết quả cần tìm.",
+        error="Offline chưa nhận diện đủ yêu cầu. Hãy nêu dữ liệu, ràng buộc và kết quả cần tìm hoặc dùng đặc tả @solve.",
+        notes=(_SUGGEST_MODEL,),
     )

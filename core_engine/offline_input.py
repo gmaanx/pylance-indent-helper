@@ -80,10 +80,61 @@ def _dimacs(text):
     return {"type": "sat", "variables": num_variables, "clauses": clauses}
 
 
+def _geometry_class_prompt(text):
+    """Read the whole request for the two supported class exercises."""
+    normalized = re.sub(r"\s+", " ", strip_accents(text).casefold()).strip()
+    normalized = normalized.replace("`", "")
+    normalized = re.sub(r"\\(?:left|right)(?=\\?\|)", "", normalized)
+    normalized = normalized.replace(r"\|", "||").replace(r"\lvert", "||").replace(r"\rvert", "||")
+    vector = re.fullmatch(
+        r"(?:de bai yeu cau\s+)?(?:viet|tao)\s+(?:mot\s+)?lop\s+vector24"
+        r"\s+(?:bieu dien\s+)?(?:vector|vec to|vecto)\s+24\s+chieu"
+        r"(?:\s+bang python(?: thuan)?)?[,.:\s]+"
+        r"(?:(?:co|voi cac yeu cau)\s*:\s*)?"
+        r"[-•\s]*cong\s+(?:2|hai)\s+(?:vector|vecto|vec to)"
+        r"(?:\s*\(v1\s*\+\s*v2\))?[.;\s]+"
+        r"[-•\s]*tich vo huong"
+        r"(?:\s*\(v1\s*[·⋅.]\s*v2\s*=\s*tong tich tung cap toa do tuong ung"
+        r"(?::\s*\$?a_\{?1\}?\s*b_\{?1\}?(?:\s*\+\s*a_\{?2\}?\s*b_\{?2\}?)?"
+        r"\s*\+\s*(?:\\cdots|\\dots|\\ldots|…|\.\.\.)(?:\s*\+\s*a_\{?24\}?\s*b_\{?24\}?)?\$?)?\))?[.;\s]+"
+        r"[-•\s]*goc giua\s+(?:2|hai)\s+(?:vector|vecto|vec to)"
+        r"(?:\s*\(tinh tu cong thuc\s+\$?\\cos\s*\\theta\s*=\s*"
+        r"\\frac\{\\vec\{u\}\s*\\cdot\s*\\vec\{v\}\}"
+        r"\{(?:\|\||\\lvert)\\vec\{u\}(?:\|\||\\rvert)"
+        r"\s*(?:\|\||\\lvert)\\vec\{v\}(?:\|\||\\rvert)\}\$?[.,;\s]+sau do)?"
+        r"(?:\s+dung)?\s+(?:math\.acos\s+de ra goc\s+(?:tinh\s+)?)?"
+        r"(?:bang|theo)\s+radian\)?[.\s]*",
+        normalized,
+    )
+    if vector:
+        return {"type": "vector24"}
+
+    point = re.fullmatch(
+        r"(?:bai\s+[0-9]+(?:\.[0-9]+)*\s*:\s*lop diem3d"
+        r"\s*\(diem trong khong gian 3 chieu\)\s*)?"
+        r"(?:viet|tao)\s+(?:mot\s+)?lop diem3d bang python(?: thuan)?"
+        r"(?:\s*\(import math\))?\s*voi cac yeu cau\s*:\s*[-•\s]*"
+        r"__init__\(self,\s*x,\s*y,\s*z\)\s*:\s*chuyen x,\s*y,\s*z sang kieu float\."
+        r"\s*neu gia tri khong phai so\s*\(hoac khong chuyen duoc sang float\),"
+        r"\s*bao loi phu hop\s*\(typeerror hoac valueerror\)\.[\s-]*"
+        r"khoang_cach_goc\(self\)\s*:\s*tinh khoang cach euclid tu diem toi goc toa do"
+        r"\s*\$?\(0,\s*0,\s*0\)\$?"
+        r"(?:,\s*cong thuc:\s*\$+d\s*=\s*\\sqrt\{x\^2\s*\+\s*y\^2\s*\+\s*z\^2\}\$+)?[.\s]*",
+        normalized,
+    )
+    if point:
+        return {"type": "diem3d"}
+
+    return None
+
+
 def read_known_format(text):
     dimacs = _dimacs(text)
     if dimacs is not None:
         return dimacs
+    geometry = _geometry_class_prompt(text)
+    if geometry is not None:
+        return geometry
     normalized = re.sub(r"\s+", " ", strip_accents(text).casefold()).strip()
     match = _PUZZLE_PROMPT.fullmatch(normalized)
     if match:

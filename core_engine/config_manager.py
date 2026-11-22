@@ -39,12 +39,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "deepseek_model": "deepseek-chat",
     "openrouter_model": "qwen/qwen-2.5-coder-32b-instruct:free",
     "openai_model": "gpt-4o-mini",
-    "local_llm_url": "http://127.0.0.1:11434/api/generate",
-    "local_llama_cpp_url": "http://127.0.0.1:8080/completion",
     "local_model": "qwen2.5-coder:1.5b",
     "ping_timeout": 0.8,
     "cloud_timeout": 8.0,
-    "local_timeout": 4.5,
+    "local_timeout": 90.0,
     "shadow_timeout": 4.0,
 }
 
@@ -68,20 +66,28 @@ class ConfigManager:
         self._data = dict(DEFAULT_CONFIG)
         local_app = os.environ.get("LOCALAPPDATA")
         if local_app:
-            self._load_models(Path(local_app) / "Programs" / "PylanceHelper" / "models.json")
+            install_dir = Path(local_app) / "Programs" / "PylanceHelper"
+            self._load_models(install_dir / "models.json")
+            runtime = self._read_object(install_dir / "runtime.json")
+            self._set_model("local_model", runtime.get("localModel"))
 
-    def _load_models(self, config_file: Path) -> None:
+    @staticmethod
+    def _read_object(config_file: Path) -> dict[str, Any]:
         try:
             models = json.loads(config_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return
-        if not isinstance(models, dict):
-            return
+            return {}
+        return models if isinstance(models, dict) else {}
+
+    def _set_model(self, field: str, value: object) -> None:
+        if isinstance(value, str) and len(value) <= 200 and _MODEL_ID.fullmatch(value):
+            self._data[field] = value
+
+    def _load_models(self, config_file: Path) -> None:
+        models = self._read_object(config_file)
         for name in (*PROVIDERS, "local"):
             field = f"{name}_model"
-            value = models.get(field)
-            if isinstance(value, str) and len(value) <= 200 and _MODEL_ID.fullmatch(value):
-                self._data[field] = value
+            self._set_model(field, models.get(field))
 
     def get_api_key(self, provider: str) -> str:
         return _SESSION_KEYS.get().get(provider, "")
