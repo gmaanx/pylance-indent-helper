@@ -222,6 +222,10 @@ def parse_user_input(raw_text: str, force_mode: Optional[str] = None) -> ParsedI
     Phân tích chuỗi đầu vào từ Editor hoặc Clipboard.
     """
     cleaned_raw = (raw_text or "").strip()
+    if cleaned_raw.startswith("```") and cleaned_raw.endswith("```"):
+        cleaned_raw = cleaned_raw[3:-3].strip()
+        if cleaned_raw.lower().startswith("json"):
+            cleaned_raw = cleaned_raw[4:].lstrip()
     if not cleaned_raw:
         return ParsedInput(mode="natural", raw_input="", prompt_text="")
 

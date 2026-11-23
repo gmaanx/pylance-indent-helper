@@ -105,6 +105,15 @@ class GeometryClassTests(unittest.TestCase):
         self.assertFalse(reference.verified_ok)
         self.assertIn("csp_magic_square", reference.tier_used)
 
+    def test_solve_json_accepts_one_outer_markdown_fence_and_explains_bad_json(self):
+        fenced = chr(96) * 3 + "json\n# @solve {\"type\":\"diem3d\"}\n" + chr(96) * 3
+        response = process_request(fenced, "instant")
+        self.assertEqual(response.validation_status, "verified")
+        malformed = process_request("# @solve {\"type\":\"diem3d\",}", "instant")
+        self.assertEqual(malformed.validation_status, "invalid")
+        self.assertIn("dòng", malformed.error_detail)
+        self.assertIn("diem3d", malformed.error_detail)
+
 
 if __name__ == "__main__":
     unittest.main()

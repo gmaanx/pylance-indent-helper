@@ -357,12 +357,22 @@ def _jug_dsl(prompt):
 def _read_problem(prompt, target_skeleton_id):
     if re.match(r"^@solve\b", prompt, re.IGNORECASE):
         source = prompt[len("@solve"):].strip()
+        if source.startswith("```") and source.endswith("```"):
+            source = source[3:-3].strip()
+            if source.lower().startswith("json"):
+                source = source[4:].lstrip()
         if len(source) > MAX_SPEC_LENGTH:
             raise OfflineProblemError("limit", "Đặc tả JSON vượt giới hạn kích thước.")
         try:
             return json.loads(source, object_pairs_hook=_no_duplicate_keys)
         except (json.JSONDecodeError, RecursionError) as exc:
-            raise OfflineProblemError("invalid", "JSON của @solve chưa hợp lệ.") from exc
+            location = getattr(exc, "lineno", None)
+            column = getattr(exc, "colno", None)
+            raise OfflineProblemError(
+                "invalid",
+                f"JSON của @solve chưa hợp lệ tại dòng {location or 1}, cột {column or 1}. "
+                "Ví dụ: # @solve {\"type\":\"diem3d\"}.",
+            ) from exc
         except ValueError as exc:
             if isinstance(exc, OfflineProblemError):
                 raise

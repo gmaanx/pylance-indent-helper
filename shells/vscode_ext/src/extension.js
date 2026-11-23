@@ -319,8 +319,9 @@ async function showPreview(snapshot, response, runtime, signal) {
 async function requestSuggestion(mode, provider = 'offline') {
   if (disabled || uninstalling) return;
   if (activeOperation) {
-    await vscode.window.showInformationMessage('Hãy hoàn tất hoặc hủy yêu cầu đang mở.');
-    return;
+    activeOperation.abort();
+    activeOperation = undefined;
+    pendingPreview = undefined;
   }
 
   const editor = vscode.window.activeTextEditor;
@@ -347,6 +348,7 @@ async function requestSuggestion(mode, provider = 'offline') {
 
   const operation = new AbortController();
   activeOperation = operation;
+  const operationToken = operation;
   pendingPreview = undefined;
   const signal = operation.signal;
   let runtime;
@@ -433,7 +435,7 @@ async function requestSuggestion(mode, provider = 'offline') {
   } catch (error) {
     if (!signal.aborted) await vscode.window.showErrorMessage(error.message);
   } finally {
-    activeOperation = undefined;
+    if (activeOperation === operationToken) activeOperation = undefined;
   }
 }
 
