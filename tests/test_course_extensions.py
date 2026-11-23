@@ -4,6 +4,8 @@ import itertools
 import json
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
 
 from core_engine.engine_pipeline import process_request
 
@@ -19,6 +21,37 @@ class CourseExtensionsTests(unittest.TestCase):
         with redirect_stdout(output):
             exec(compile(response.code, "<trusted-solver-fixture>", "exec"), {"__name__": "__main__"})
         return ast.literal_eval(output.getvalue())
+
+    def test_two_quoted_exercises_from_editor_work_in_all_modes(self):
+        sample = (Path(__file__).resolve().parents[1] / "thu_nghiem.py").read_text(encoding="utf-8-sig")
+        prompts = [ast.get_source_segment(sample, node) for node in ast.parse(sample).body]
+        modes = (
+            ("instant", {}),
+            ("full", {}),
+            ("full", {"allow_cloud": True}),
+            ("self_fix", {}),
+            ("full", {"allow_local": True}),
+        )
+        with (
+            patch("core_engine.engine_pipeline.call_tier1_cloud_llm") as cloud,
+            patch("core_engine.engine_pipeline.call_tier2_local_llm") as local,
+        ):
+            for action, options in modes:
+                with self.subTest(action=action, options=options):
+                    puzzle = self.result(process_request(prompts[0], action, **options))
+                    self.assertEqual(puzzle["moves"], 2)
+                    self.assertEqual(puzzle["h1"]["moves"], puzzle["h2"]["moves"])
+                    shifts = self.result(process_request(prompts[1], action, **options))
+                    self.assertEqual(set(shifts), {"An", "Binh", "Chi", "Dung"})
+                    self.assertIn(shifts["An"], {"Sang", "Chieu"})
+                    self.assertNotEqual(shifts["Dung"], "Sang")
+                    for a, b in (("An", "Binh"), ("Binh", "Chi"), ("Chi", "Dung")):
+                        self.assertNotEqual(shifts[a], shifts[b])
+            cloud.assert_not_called()
+            local.assert_not_called()
+
+        extra_rule = prompts[1].replace("Yêu cầu:", "Mỗi ca có tối đa hai nhân viên.\nYêu cầu:")
+        self.assertFalse(process_request(extra_rule, "instant").code)
 
     def test_basic_exercises_and_no_ignored_qualifier(self):
         self.assertEqual(self.result(process_request("# In 4 số Fibonacci đầu tiên bắt đầu từ 2, 3", "instant")), [2, 3, 5, 8])

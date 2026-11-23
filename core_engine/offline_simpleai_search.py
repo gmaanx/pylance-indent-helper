@@ -154,6 +154,14 @@ def _run_with_dependency(solver, *args):
         ) from exc
 
 
+def _compare_simpleai_puzzle(start, goal, visit_limit):
+    h1 = _solve_simpleai_puzzle(start, goal, "misplaced", visit_limit)
+    h2 = _solve_simpleai_puzzle(start, goal, "manhattan", visit_limit)
+    if (h1["status"], h1["moves"]) != (h2["status"], h2["moves"]):
+        raise RuntimeError("A* heuristics disagree on the optimal path length.")
+    return {"status": h2["status"], "moves": h2["moves"], "h1": h1, "h2": h2}
+
+
 def _simpleai_graph(problem):
     from .offline_solver import OfflineProblemError, OfflineSolution, _array, _fields, _integer, _name, _standalone
 
@@ -248,8 +256,8 @@ def _simpleai_puzzle(problem):
 
     _fields(problem, ("type", "start", "goal"), ("heuristic",))
     heuristic = problem.get("heuristic", "manhattan")
-    if heuristic not in ("manhattan", "misplaced"):
-        raise OfflineProblemError("unsupported", "Heuristic của 8-puzzle là manhattan hoặc misplaced.")
+    if heuristic not in ("manhattan", "misplaced", "both"):
+        raise OfflineProblemError("unsupported", "Heuristic của 8-puzzle nhận manhattan, misplaced hoặc both.")
     boards = []
     for key in ("start", "goal"):
         board = tuple(_integer(tile, key, 0, 8) for tile in _array(problem[key], key, 9, 9))
@@ -257,15 +265,24 @@ def _simpleai_puzzle(problem):
             raise OfflineProblemError("invalid", f"{key} phải chứa mỗi số từ 0 đến 8 đúng một lần.")
         boards.append(board)
 
-    args = (*boards, heuristic, 3_000)
-    result = _run_with_dependency(_solve_simpleai_puzzle, *args)
+    functions = (_puzzle_parity, _puzzle_neighbors, _solve_simpleai_puzzle)
+    if heuristic == "both":
+        args = (*boards, 3_000)
+        solver = _compare_simpleai_puzzle
+        functions += (solver,)
+    else:
+        args = (*boards, heuristic, 3_000)
+        solver = _solve_simpleai_puzzle
+    result = _run_with_dependency(solver, *args)
     if result["status"] == "found":
         summary = f"A* của SimpleAI tìm được lời giải tối thiểu {result['moves']} bước trượt."
     else:
         summary = "Hai bảng khác tính chẵn lẻ, không thể trượt tới đích."
+    if heuristic == "both" and result["status"] == "found":
+        summary += f" h1 xét {result['h1']['visited']} nút, h2 xét {result['h2']['visited']} nút."
     return OfflineSolution(
         "simpleai_puzzle",
-        _standalone((_puzzle_parity, _puzzle_neighbors, _solve_simpleai_puzzle), _solve_simpleai_puzzle, args, result),
+        _standalone(functions, solver, args, result),
         summary, ("Dùng A* với trạng thái tuple. Heuristic bỏ qua ô trống 0.",),
         ("minimum_moves", result["moves"]),
     )

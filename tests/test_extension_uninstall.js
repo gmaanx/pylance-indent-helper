@@ -47,7 +47,8 @@ function harness({
     apply: undefined,
     send: undefined,
     uninstall: undefined,
-    confirmPreview: undefined
+    confirmPreview: undefined,
+    warning: undefined
   };
   let previewProvider;
   let uriIndex = 0;
@@ -123,6 +124,7 @@ function harness({
         notices.push({ kind: 'warning', message, options });
         if (action === 'Gửi') return state.send;
         if (action === 'Gỡ cài đặt') return state.uninstall;
+        if (!action && state.warning) return state.warning();
       },
       showErrorMessage: async (message) => { notices.push({ kind: 'error', message }); },
       showQuickPick: async (providers) => providers.find((provider) => provider.id === 'groq'),
@@ -209,6 +211,72 @@ function finish(child, code = 'print("Đáp án")', options = {}) {
   child.stdout.emit('data', JSON.stringify({ code, validation_status: 'verified', ...options }));
   child.emit('close', 0);
 }
+
+test('cursor in a triple-quoted prompt sends and replaces only that prompt in every mode', async () => {
+  const first = '"""\r\nĐề thứ nhất.\r\n"""';
+  const second = '"""\r\nĐề thứ hai.\r\n"""';
+  const original = 'data = """chuỗi dữ liệu"""\r\n' + first + '\r\n\r\n' + second + '\r\n';
+  const cursor = original.indexOf('Đề thứ hai');
+  for (const command of ['instantFormat', 'deepFormat', 'ghostMode', 'silentFix', 'localAi']) {
+    const h = harness({ text: original, selected: [cursor, cursor] });
+    h.state.send = 'Gửi';
+    h.state.apply = 'Áp dụng';
+    const request = h.run(command);
+    await flush();
+    assert.equal(JSON.parse(h.children[0].input).text, second);
+    if (command === 'ghostMode') {
+      assert.ok(h.notices.some((notice) => notice.message.includes('khối đề tại con trỏ')));
+    }
+    finish(h.children[0], 'print(2)');
+    await request;
+    await flush();
+    assert.equal(h.diffs[0].proposed, original.replace(second, 'print(2)'));
+    assert.equal(h.edits[0].range.start, original.indexOf(second));
+    assert.equal(h.edits[0].range.end, original.indexOf(second) + second.length);
+  }
+});
+
+test('multiple prompts require a cursor or selection that identifies one block', async () => {
+  const original = '"""\nMột đề\n"""\n\n"""\nĐề khác\n"""';
+  const between = original.indexOf('\n\n') + 1;
+  for (const selected of [[between, between], [0, original.length]]) {
+    const h = harness({ text: original, selected });
+    await h.run('instantFormat');
+    assert.equal(h.children.length, 0);
+    assert.match(h.notices.at(-1).message, /Có nhiều khối đề/);
+  }
+});
+
+test('selecting text inside a quoted prompt expands the replacement to both delimiters', async () => {
+  const original = '"""Đề đầu"""\n\n"""Đề cần giải"""\n';
+  const start = original.indexOf('Đề cần giải');
+  const h = harness({ text: original, selected: [start, start + 'Đề cần giải'.length] });
+  h.state.apply = 'Áp dụng';
+  const request = h.run('instantFormat');
+  await flush();
+  assert.equal(JSON.parse(h.children[0].input).text, '"""Đề cần giải"""');
+  finish(h.children[0], 'print(2)');
+  await request;
+  await flush();
+  assert.equal(h.diffs[0].proposed, '"""Đề đầu"""\n\nprint(2)\n');
+  assert.equal(h.edits[0].range.start, start - 3);
+  assert.equal(h.edits[0].range.end, original.length - 1);
+});
+
+test('a no-result notification does not block the next request', async () => {
+  const h = harness();
+  h.state.warning = () => new Promise(() => {});
+  const first = h.run('instantFormat');
+  await flush();
+  finish(h.children[0], '', { validation_status: 'unsupported' });
+  await first;
+  const retry = h.run('localAi');
+  await flush();
+  assert.equal(h.children.length, 2);
+  finish(h.children[1]);
+  await retry;
+  assert.equal(h.diffs.length, 1);
+});
 
 test('Alt+5 requests Local AI without credentials or Cloud and opens a preview', async () => {
   const packageJson = require('../shells/vscode_ext/package.json');

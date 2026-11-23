@@ -135,20 +135,76 @@ async function chooseCredentials() {
   return key ? { provider, key } : null;
 }
 
+function findPromptBlocks(source) {
+  // Scan strings and comments so triple quotes inside Python code or an
+  // assigned string do not become prompt blocks.
+  const tokens = /#[^\r\n]*|"""|'''|"|'|[()[\]{}]|\\\r?\n/g;
+  const blocks = [];
+  let depth = 0;
+  let continued = false;
+  let previousEnd = 0;
+  for (let match; (match = tokens.exec(source));) {
+    const start = match.index;
+    const token = match[0];
+    const lineStart = source.lastIndexOf('\n', start - 1) + 1;
+    if (lineStart > previousEnd) continued = false;
+    previousEnd = tokens.lastIndex;
+    if (token.startsWith('#')) continue;
+    if (token.startsWith('\\')) {
+      continued = true;
+      continue;
+    }
+    if ('([{'.includes(token)) {
+      depth++;
+      continue;
+    }
+    if (')]}'.includes(token)) {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    let end = tokens.lastIndex;
+    while (end < source.length && !source.startsWith(token, end)) {
+      if (source[end] === '\\') {
+        end += source.startsWith('\r\n', end + 1) ? 3 : 2;
+      } else if (token.length === 1 && /[\r\n]/.test(source[end])) {
+        break;
+      } else {
+        end++;
+      }
+    }
+    const closed = source.startsWith(token, end);
+    tokens.lastIndex = closed ? end + token.length : end;
+    previousEnd = tokens.lastIndex;
+    if (!closed || token.length !== 3 || depth || continued || start !== lineStart) continue;
+    const lineEnd = source.indexOf('\n', previousEnd);
+    const tail = source.slice(previousEnd, lineEnd === -1 ? source.length : lineEnd);
+    if (/^\s*$/.test(tail)) blocks.push({ start, end: previousEnd });
+  }
+  return blocks;
+}
+
 function takeSnapshot(editor) {
   const document = editor.document;
   const source = document.getText();
   const selection = editor.selection;
   const start = document.offsetAt(selection.start);
   const end = document.offsetAt(selection.end);
+  let replaceStart = selection.isEmpty ? 0 : start;
+  let replaceEnd = selection.isEmpty ? source.length : end;
+  const blocks = findPromptBlocks(source);
+  const current = blocks.find((block) => start >= block.start && end <= block.end);
+  if (current) {
+    replaceStart = current.start;
+    replaceEnd = current.end;
+  } else if (selection.isEmpty ? blocks.length > 1 :
+    blocks.filter((block) => start < block.end && end > block.start).length > 1) {
+    return null;
+  }
   return {
     editor, document, source, start, end,
     version: document.version,
-    range: selection.isEmpty
-      ? new vscode.Range(document.positionAt(0), document.positionAt(source.length))
-      : new vscode.Range(selection.start, selection.end),
-    replaceStart: selection.isEmpty ? 0 : start,
-    replaceEnd: selection.isEmpty ? source.length : end
+    range: new vscode.Range(document.positionAt(replaceStart), document.positionAt(replaceEnd)),
+    replaceStart, replaceEnd
   };
 }
 
@@ -290,7 +346,7 @@ async function showPreview(snapshot, response, runtime, signal) {
   const code = response.code.replace(/\r\n|\r|\n/g, newline);
   const candidate = source.slice(0, replaceStart) + code + source.slice(replaceEnd);
   if (candidate === source) {
-    await vscode.window.showInformationMessage('Kết quả giống nội dung hiện tại. ' + resultMessage(response));
+    void vscode.window.showInformationMessage('Kết quả giống nội dung hiện tại. ' + resultMessage(response));
     return;
   }
 
@@ -318,11 +374,6 @@ async function showPreview(snapshot, response, runtime, signal) {
 
 async function requestSuggestion(mode, provider = 'offline') {
   if (disabled || uninstalling) return;
-  if (activeOperation) {
-    activeOperation.abort();
-    activeOperation = undefined;
-    pendingPreview = undefined;
-  }
 
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'python' ||
@@ -335,6 +386,10 @@ async function requestSuggestion(mode, provider = 'offline') {
     return;
   }
   const snapshot = takeSnapshot(editor);
+  if (!snapshot) {
+    void vscode.window.showWarningMessage('Có nhiều khối đề. Đặt con trỏ trong khối cần giải hoặc bôi đen đúng một đề.');
+    return;
+  }
   const text = snapshot.source.slice(snapshot.replaceStart, snapshot.replaceEnd);
   if (!text.trim()) {
     await vscode.window.showWarningMessage('Nhập đề bài hoặc mã Python vào file trước khi chạy.');
@@ -346,9 +401,9 @@ async function requestSuggestion(mode, provider = 'offline') {
     return;
   }
 
+  activeOperation?.abort();
   const operation = new AbortController();
   activeOperation = operation;
-  const operationToken = operation;
   pendingPreview = undefined;
   const signal = operation.signal;
   let runtime;
@@ -362,7 +417,10 @@ async function requestSuggestion(mode, provider = 'offline') {
     if (useCloud) {
       const session = await chooseCredentials();
       if (!session || signal.aborted) return;
-      const scope = editor.selection.isEmpty ? 'toàn bộ nội dung file đang mở' : 'nội dung vùng chọn';
+      const scope = snapshot.replaceStart === 0 && snapshot.replaceEnd === snapshot.source.length
+        ? 'toàn bộ nội dung file đang mở'
+        : snapshot.replaceStart === snapshot.start && snapshot.replaceEnd === snapshot.end
+          ? 'nội dung vùng chọn' : 'khối đề tại con trỏ hoặc vùng chọn';
       const decision = await vscode.window.showWarningMessage(
         'Gửi ' + scope + ' đến ' + session.provider.label + ' để tạo đề xuất?',
         { modal: true }, 'Gửi'
@@ -409,7 +467,9 @@ async function requestSuggestion(mode, provider = 'offline') {
       });
     } finally {
       clearInterval(watch);
-      await vscode.commands.executeCommand('setContext', RUNNING_CONTEXT, false);
+      if (activeOperation === operation) {
+        await vscode.commands.executeCommand('setContext', RUNNING_CONTEXT, false);
+      }
     }
     if (signal.aborted || !runtimeReady(runtime)) return;
     if (reply.code !== 0) throw new Error('Bộ xử lý Python gặp lỗi. Chạy lại setup nếu lỗi lặp lại.');
@@ -424,18 +484,18 @@ async function requestSuggestion(mode, provider = 'offline') {
       throw new Error('Bộ xử lý Python trả dữ liệu không hợp lệ.');
     }
     if (!snapshotUnchanged(snapshot)) {
-      await vscode.window.showWarningMessage('File hoặc vùng chọn đã thay đổi trong lúc xử lý. Chạy lại lệnh để xem kết quả mới.');
+      void vscode.window.showWarningMessage('File hoặc vùng chọn đã thay đổi trong lúc xử lý. Chạy lại lệnh để xem kết quả mới.');
       return;
     }
     if (response.code.trim()) {
       await showPreview(snapshot, response, runtime, signal);
     } else {
-      await vscode.window.showWarningMessage(resultMessage(response));
+      void vscode.window.showWarningMessage(resultMessage(response));
     }
   } catch (error) {
-    if (!signal.aborted) await vscode.window.showErrorMessage(error.message);
+    if (!signal.aborted) void vscode.window.showErrorMessage(error.message);
   } finally {
-    if (activeOperation === operationToken) activeOperation = undefined;
+    if (activeOperation === operation) activeOperation = undefined;
   }
 }
 

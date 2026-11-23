@@ -2,7 +2,7 @@
   "name": "pylance-indent-helper",
   "displayName": "Trợ lý bài tập Python",
   "description": "Giải bài tập Python được hỗ trợ offline và xem trước đề xuất sửa code.",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "publisher": "ms-python-tools",
   "engines": {
     "vscode": "^1.75.0"

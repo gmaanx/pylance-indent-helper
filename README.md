@@ -36,16 +36,18 @@ Khi file cần SimpleAI mà Python đang chọn báo `ModuleNotFoundError`, lưu
 
 ## Dùng trong IDE
 
-1. Mở một file `.py` và dán đúng một dòng bên dưới. Để xử lý riêng một đoạn, bôi đen đoạn đó trước khi bấm phím tắt. Khi con trỏ không chọn vùng nào, lệnh đọc cả file.
-2. Bấm **Alt+1** và kiểm tra cửa sổ so sánh. Ví dụ này tạo lớp `Diem3D` bằng thư viện chuẩn Python.
+1. Mở file `.py`, đặt đề trong dấu ba nháy `"""` rồi đặt con trỏ trong khối đề. Dùng cách này cho **Alt+1** đến **Alt+5**. Có thể bôi đen một đề để chỉ định vùng cần xử lý.
+2. Bấm **Alt+1** và kiểm tra cửa sổ so sánh. Ví dụ dưới đây tìm ba số nguyên tố đầu tiên.
 3. Chọn **Áp dụng** ở thông báo của IDE để cập nhật file. Nếu file hoặc vùng chọn đã thay đổi, chạy lại lệnh để tạo bản xem trước mới.
 4. Lưu bằng **Ctrl+S**. Nếu mã có đoạn chạy thử, chọn **Bài tập Python: Chạy file đã lưu bằng Python của công cụ** trong **Ctrl+Shift+P** để xem kết quả ở Terminal. Nếu mã chỉ định nghĩa lớp hoặc hàm, cần gọi lớp hoặc hàm để thấy kết quả.
 
 ```python
-# @solve {"type":"diem3d"}
+"""
+Liệt kê 3 số nguyên tố đầu tiên.
+"""
 ```
 
-Sau khi áp dụng ví dụ, thêm `print(Diem3D(3, 4, 12).khoang_cach_goc())` ở cuối file, lưu và chạy để thấy kết quả `13.0`.
+Nếu file có nhiều đề, chọn từng khối bằng con trỏ hoặc vùng bôi đen. Khi áp dụng, công cụ thay đúng khối đang giải. Hai đề 8-puzzle và phân ca trực có thể thử trực tiếp từ file mẫu. [thu_nghiem.py](thu_nghiem.py)
 
 | Phím | Lệnh |
 | --- | --- |
@@ -60,12 +62,13 @@ Có thể tìm các lệnh trong **Ctrl+Shift+P**. Lệnh hủy hiện ở thôn
 
 ## Dùng bộ giải offline
 
-Bộ giải đọc những câu mô tả đơn giản mà nó nhận diện được. Với dữ liệu dài hoặc cần kết quả có thể kiểm tra, viết một dòng comment `# @solve` chứa JSON. Đặt trong file riêng hoặc bôi đen đúng dòng đó trước khi chạy `Alt+1`.
+Bộ giải offline xử lý các dạng mà nó đọc được đầy đủ dữ kiện và ràng buộc. `@solve` là định dạng tùy chọn để khai báo dữ liệu chính xác. Với đề tự do chưa có bộ giải phù hợp, chọn **Alt+3** hoặc **Alt+5** ngay trên cùng khối văn bản.
 
 Offline chỉ mở bản xem trước khi nhận diện được đặc tả hoặc khi bạn gọi đích danh mẫu tham khảo. Khi đề có điều kiện chưa hỗ trợ, tool giữ nguyên file và hiển thị chẩn đoán. Hai ví dụ lớp Python được kiểm thử từ ảnh báo lỗi dùng thư viện chuẩn.
 
 ```python
 # @solve {"type":"vector24"}
+# @solve {"type":"diem3d"}
 ```
 
 Lớp `Vector24` nhận 24 tọa độ, hỗ trợ phép cộng, `tich_vo_huong()` và `goc()` theo radian. Ví dụ `Vector24([1] * 24).tich_vo_huong(Vector24([2] * 24))` trả `48`.

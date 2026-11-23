@@ -5,6 +5,7 @@ import json
 import re
 
 from .golden_skeletons import strip_accents
+from .offline_course_prompts import read_course_prompt
 
 __all__ = ["read_known_format"]
 
@@ -129,6 +130,9 @@ def _geometry_class_prompt(text):
 
 
 def read_known_format(text):
+    course_problem = read_course_prompt(text)
+    if course_problem is not None:
+        return course_problem
     dimacs = _dimacs(text)
     if dimacs is not None:
         return dimacs

@@ -168,6 +168,6 @@ def process_request(
         )
     return finish(
         "unsupported", "no_match",
-        error="Offline chưa nhận diện đủ yêu cầu. Hãy nêu dữ liệu, ràng buộc và kết quả cần tìm hoặc dùng đặc tả @solve.",
+        error="Offline chưa nhận diện đủ yêu cầu. Hãy ghi rõ dữ liệu đầu vào, ràng buộc và kết quả cần tìm.",
         notes=(_SUGGEST_MODEL,),
     )
