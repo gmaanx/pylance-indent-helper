@@ -13,7 +13,7 @@ if str(ROOT_DIR) not in sys.path:
 from core_engine.config_manager import PROVIDERS, session_credentials
 from core_engine.engine_pipeline import process_request
 
-MODES = ("instant", "full", "ghost", "self_fix")
+MODES = ("instant", "full", "ghost", "self_fix", "local")
 MAX_INPUT_BYTES = 256 * 1024
 
 
@@ -44,7 +44,7 @@ def decode_request(raw: str, mode: str = "full", verify: bool = True, *, allow_n
             text = request["text"]
             mode = request.get("mode", mode)
             verify = request.get("verify", verify)
-            cloud = allow_network and request.get("allow_cloud") is True
+            cloud = allow_network and mode != "local" and request.get("allow_cloud") is True
             local = allow_network and request.get("allow_local") is True
             if cloud:
                 credentials = request.get("credentials")

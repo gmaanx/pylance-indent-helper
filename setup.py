@@ -1,4 +1,4 @@
-"""Install an offline runtime and a VSIX for the current Windows user."""
+"""Install Offline and API or Ollama integration for the current Windows user."""
 
 import argparse
 import json
@@ -11,14 +11,23 @@ from pathlib import Path
 
 from go_cai_dat import (
     _remove_tree,
+    copy_runtime_files,
     install_root,
     install_lock,
     list_extensions,
     load_runtime,
+    remove_obsolete_runtimes,
     run_ide_cli,
+    save_runtime,
     stop_daemon_processes,
 )
-from setup_lab.local_ai import DEFAULT_MODEL, check_local_ai, normalize_model, prepare_local_ai
+from setup_lab.local_ai import (
+    DEFAULT_MODEL,
+    check_managed_local_ai,
+    install_local_ai,
+    migrate_legacy_local_ai,
+    normalize_model,
+)
 from shells.vscode_ext.pack_vsix import build_vsix
 
 
@@ -51,7 +60,7 @@ def check_install(ide: str, ide_cli: Path | None, profile: str = "simpleai") -> 
     bootstrap = Path(sys._base_executable).resolve()
     if not bootstrap.is_file():
         raise RuntimeError(f"Khong tim thay Python goc: {bootstrap}")
-    missing = [name for name in DEPENDENCIES[profile] if not any(WHEELS.glob(f"{name.lower()}-*.whl"))]
+    missing = [name for name in DEPENDENCIES.get(profile, ()) if not any(WHEELS.glob(f"{name.lower()}-*.whl"))]
     if missing:
         packages = ", ".join(missing)
         raise RuntimeError(f"Goi offline thieu {packages}. Dung ban ZIP full neu can thu vien bo sung.")
@@ -95,6 +104,8 @@ def run_python(python: Path, *args: str, cwd: Path, timeout: int, input_text=Non
 
 
 def prepare_engine(runtime: Path, bootstrap: Path, profile: str = "simpleai") -> Path:
+    if profile == "local":
+        return bootstrap
     python = runtime / ".venv" / "Scripts" / "python.exe"
     run_python(bootstrap, "-m", "venv", str(runtime / ".venv"), cwd=runtime, timeout=120)
     print("Dang cai thu vien Python tu goi offline...", flush=True)
@@ -105,16 +116,14 @@ def prepare_engine(runtime: Path, bootstrap: Path, profile: str = "simpleai") ->
         *DEPENDENCIES[profile],
         cwd=runtime, timeout=180,
     )
-    shutil.copytree(
-        SOURCE / "core_engine",
-        runtime / "core_engine",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pylance_cache.json"),
-    )
-    shutil.copy2(SOURCE / "go_cai_dat.py", runtime / "go_cai_dat.py")
     return python
 
 
 def smoke_test(python: Path, runtime: Path, profile: str = "simpleai") -> None:
+    cli = str(runtime / "core_engine" / "cli_entry.py")
+    if profile == "local":
+        run_python(python, cli, "--help", cwd=runtime, timeout=30)
+        return
     imports = "from simpleai.search import SearchProblem, astar, CspProblem, backtrack"
     if profile == "full":
         imports += "\nimport kanren, sympy"
@@ -126,7 +135,7 @@ def smoke_test(python: Path, runtime: Path, profile: str = "simpleai") -> None:
     })
     reply = json.loads(run_python(
         python,
-        str(runtime / "core_engine" / "cli_entry.py"),
+        cli,
         "--mode", "instant",
         cwd=runtime, timeout=30, input_text=request,
     ))
@@ -138,32 +147,35 @@ def smoke_test(python: Path, runtime: Path, profile: str = "simpleai") -> None:
         raise RuntimeError("Kiem tra offline khong tao duoc loi giai da xac minh.")
 
 
-def _save_runtime(root: Path, runtime: Path, config: dict) -> None:
-    staging = runtime / "runtime.json"
-    try:
-        staging.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
-        staging.replace(root / "runtime.json")
-    finally:
-        staging.unlink(missing_ok=True)
-
-
 def install_all(
     ide_cli: Path | None,
     bootstrap: Path,
     profile: str = "simpleai",
     local_model: str | None = None,
+    *,
+    wants_local: bool = False,
 ) -> None:
     root = install_root()
     with install_lock(root):
         root.mkdir(exist_ok=True)
         previous = load_runtime(root) or {}
+        migrate_legacy_local_ai(previous)
+        existing_python = None
+        if profile == "local" and previous and previous.get("baseEnabled", True):
+            previous_profile = previous.get("dependencyProfile", "simpleai")
+            if previous_profile in DEPENDENCIES:
+                profile = previous_profile
+                candidate = Path(previous.get("python", ""))
+                if candidate.is_absolute() and candidate.is_file():
+                    existing_python = candidate
         if (root / "shells" / "stealth_daemon" / "daemon.pyw").exists():
             stop_daemon_processes()
         runtime = Path(tempfile.mkdtemp(prefix="runtime-", dir=root))
         installed = False
         try:
             print(f"Dang tao moi truong Python rieng tai {runtime}", flush=True)
-            python = prepare_engine(runtime, bootstrap, profile)
+            python = existing_python or prepare_engine(runtime, bootstrap, profile)
+            copy_runtime_files(SOURCE, runtime)
             smoke_test(python, runtime, profile)
 
             pkg = json.loads((SOURCE / "shells" / "vscode_ext" / "package.json").read_text(encoding="utf-8"))
@@ -184,39 +196,30 @@ def install_all(
                 "engineRoot": str(runtime),
                 "python": str(python),
                 "dependencyProfile": profile,
+                "baseEnabled": profile != "local",
                 "uninstallPython": str(bootstrap),
                 "ides": ides,
                 "manualExtension": ide_cli is None or previous.get("manualExtension", False),
             }
-            for field in ("localModel", "localOllamaExecutable"):
-                if isinstance(previous.get(field), str):
-                    config[field] = previous[field]
-            _save_runtime(root, runtime, config)
+            save_runtime(root, config)
             installed = True
             (root / ".uninstalling").unlink(missing_ok=True)
         finally:
             if not installed:
                 _remove_tree(runtime, root)
 
-        for obsolete in root.glob("runtime-*"):
-            if obsolete != runtime and obsolete.is_dir() and (obsolete / ".venv" / "pyvenv.cfg").is_file():
-                try:
-                    _remove_tree(obsolete, root)
-                except OSError as exc:
-                    print(f"[CANH BAO] Khong xoa duoc ban cu {obsolete.name}. {exc}")
+        remove_obsolete_runtimes(root, config)
 
-        print(f"[OK] Python va che do offline ({profile}) da duoc kiem tra.")
+        print(f"[OK] Python va tich hop IDE ({profile}) da duoc kiem tra.")
         print(f"Python de chay bai trong IDE: {python}")
         if ide_cli is None:
             print(f"Cai extension trong IDE qua Extensions > Install from VSIX: {vsix}")
         print("Neu IDE dang mo, dung Reload Window de nap ban moi.")
-        if local_model is not None:
+        if wants_local or local_model is not None:
             try:
-                optional = prepare_local_ai(local_model)
-                config.pop("localOllamaExecutable", None)
-                _save_runtime(root, runtime, {**config, **optional})
+                optional = install_local_ai(local_model)
             except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                raise RuntimeError(f"Da cai ban co ban. Local AI chua san sang. {exc}") from exc
+                raise RuntimeError(f"Da cai tich hop IDE. Local AI chua san sang. {exc}") from exc
             print(f"[OK] Local AI san sang voi {optional['localModel']}.")
 
 
@@ -226,22 +229,27 @@ def main() -> int:
     parser.add_argument("--ide-cli", type=Path, help="Duong dan day du den CLI cua IDE.")
     parser.add_argument("--profile", choices=DEPENDENCIES, default="simpleai", help="simpleai gon nhe; full them miniKanren va SymPy.")
     parser.add_argument("--check", action="store_true", help="Kiem tra Python, goi offline va CLI.")
-    parser.add_argument("--local", action="store_true", help="Cai tuy chon Local AI voi Ollama.")
-    parser.add_argument("--local-model", help=f"Model Ollama dung voi --local. Mac dinh {DEFAULT_MODEL}.")
+    component = parser.add_mutually_exclusive_group()
+    component.add_argument("--local", action="store_true", help="Cai Offline, API va Ollama (tuong thich lenh cu).")
+    component.add_argument("--local-shell", action="store_true", help="Cai Ollama va tich hop Alt+5.")
+    parser.add_argument("--local-model", help=f"Model Ollama dung voi --local-shell. Mac dinh {DEFAULT_MODEL}.")
     args = parser.parse_args()
-    if args.local_model is not None and not args.local:
-        parser.error("--local-model can dung cung --local.")
+    wants_local = args.local or args.local_shell
+    if args.local_model is not None and not wants_local:
+        parser.error("--local-model can dung cung --local-shell hoac --local.")
     try:
-        local_model = normalize_model(args.local_model or DEFAULT_MODEL) if args.local else None
-        cli, python = check_install(args.ide, args.ide_cli, args.profile)
+        local_model = normalize_model(args.local_model) if args.local_model is not None else None
+        profile = "local" if args.local_shell else args.profile
+        cli, python = check_install(args.ide, args.ide_cli, profile)
         if args.check:
             print(f"[OK] Python {sys.version.split()[0]}: {python}")
-            print(f"[OK] Goi offline ({args.profile}): {WHEELS}")
+            if not args.local_shell:
+                print(f"[OK] Goi offline ({profile}): {WHEELS}")
             print(f"[OK] IDE: {cli or 'Cai VSIX tu menu Extensions'}")
-            if local_model is not None:
-                print(f"[OK] Local AI: {check_local_ai(local_model)}")
+            if wants_local:
+                print(f"[OK] Local AI: {check_managed_local_ai(local_model)}")
         else:
-            install_all(cli, python, args.profile, local_model)
+            install_all(cli, python, profile, local_model, wants_local=wants_local)
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"[LOI] Cai dat chua hoan tat. {exc}", file=sys.stderr)
         return 1

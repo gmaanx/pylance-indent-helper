@@ -19,23 +19,30 @@ function harness({
   isDirty = false,
   isTrusted = true,
   dependencyProfile = 'simpleai',
+  baseEnabled = true,
+  localModel = 'qwen2.5-coder:1.5b',
+  legacyLocalModel,
   missingUninstaller = false
 } = {}) {
   const localAppData = path.resolve('test-profile');
   const engineRoot = path.join(localAppData, 'Programs', 'PylanceHelper');
   const cli = path.join(engineRoot, 'core_engine', 'cli_entry.py');
   const runtimePath = path.join(engineRoot, 'runtime.json');
+  const localConfigPath = path.join(localAppData, 'PylanceHelperLocalAI', 'runtime.json');
   const marker = path.join(engineRoot, '.uninstalling');
   const python = path.join(engineRoot, '.venv', 'Scripts', 'python.exe');
   const uninstallPython = path.resolve('system-python.exe');
   const uninstallScript = path.join(engineRoot, 'go_cai_dat.py');
   const files = new Set([entry, cli, runtimePath, python, uninstallPython]);
+  if (localModel) files.add(localConfigPath);
   if (!missingUninstaller) files.add(uninstallScript);
   if (scheme === 'file') files.add(fileName);
+  const runtime = { engineRoot, python, uninstallPython, dependencyProfile, baseEnabled, localModel: legacyLocalModel };
+  const localConfig = { localModel };
 
   const children = [];
   const edits = [];
-  const diffs = [];
+  const editorCommands = [];
   const notices = [];
   const contexts = [];
   const prompts = [];
@@ -44,14 +51,11 @@ function harness({
   const timers = new Set();
   const commands = new Map();
   const state = {
-    apply: undefined,
     send: undefined,
     uninstall: undefined,
-    confirmPreview: undefined,
     warning: undefined
   };
-  let previewProvider;
-  let uriIndex = 0;
+  let contents = text;
   const uri = (scheme, pathname) => ({ scheme, fsPath: pathname, toString: () => scheme + ':' + pathname });
   const document = {
     uri: uri(scheme, fileName),
@@ -63,13 +67,23 @@ function harness({
     isClosed: false,
     offsetAt: (position) => position,
     positionAt: (offset) => offset,
-    getText: () => text
+    getText: () => contents
   };
   const [start, end] = selected || [0, 0];
   const editor = {
     document,
     selection: { isEmpty: start === end, start, end },
-    get selections() { return [this.selection]; }
+    get selections() { return [this.selection]; },
+    async edit(callback, options) {
+      callback({
+        replace(range, code) {
+          contents = contents.slice(0, range.start) + code + contents.slice(range.end);
+          document.version++;
+          edits.push({ range, code, options });
+        }
+      });
+      return true;
+    }
   };
   const disposable = { dispose() {} };
   const vscode = {
@@ -79,12 +93,6 @@ function harness({
         this.end = end;
       }
     },
-    WorkspaceEdit: class WorkspaceEdit {
-      replace(target, range, code) {
-        this.change = { target, range, code };
-      }
-    },
-    Uri: { from: ({ scheme, path: pathname }) => uri(scheme, pathname) },
     EndOfLine: { CRLF: 2 },
     ProgressLocation: { Notification: 1 },
     TaskScope: { Global: 1 },
@@ -101,24 +109,16 @@ function harness({
     },
     tasks: { executeTask: async (task) => { tasks.push(task); } },
     env: { clipboard: { writeText: async (value) => { clipboardWrites.push(value); } } },
-    workspace: {
-      isTrusted,
-      registerTextDocumentContentProvider: (_scheme, provider) => {
-        previewProvider = provider;
-        return disposable;
-      },
-      onDidCloseTextDocument: () => disposable,
-      applyEdit: async (edit) => {
-        edits.push(edit.change);
-        return true;
-      }
-    },
+    workspace: { isTrusted },
     window: {
       activeTextEditor: noEditor ? undefined : editor,
-      showInformationMessage: async (message, action, command) => {
-        notices.push({ kind: 'info', message, detail: action?.detail });
-        if (command === 'Sao chép đường dẫn') return state.copyRuntime;
-        return action === 'Áp dụng' && state.confirmPreview ? state.confirmPreview() : state.apply;
+      showInformationMessage: async (message, ...actions) => {
+        notices.push({ kind: 'info', message, detail: actions[0]?.detail });
+        if (actions.includes('Sao chép đường dẫn')) return state.copyRuntime;
+      },
+      setStatusBarMessage(message) {
+        notices.push({ kind: 'status', message });
+        return disposable;
       },
       showWarningMessage: async (message, options, action) => {
         notices.push({ kind: 'warning', message, options });
@@ -144,14 +144,7 @@ function harness({
       },
       executeCommand: async (name, ...args) => {
         if (name === 'setContext') contexts.push(args);
-        if (name === 'vscode.diff') {
-          const [original, proposed, title] = args;
-          diffs.push({
-            original: previewProvider.provideTextDocumentContent(original),
-            proposed: previewProvider.provideTextDocumentContent(proposed),
-            title
-          });
-        }
+        else editorCommands.push(name);
       }
     }
   };
@@ -164,14 +157,13 @@ function harness({
       if (name === 'vscode') return vscode;
       if (name === 'node:path') return path;
       if (name === 'node:os') return { tmpdir: () => path.resolve('test-temp') };
-      if (name === 'node:crypto') return { randomUUID: () => String(++uriIndex) };
       if (name === 'node:fs') {
         return {
           existsSync: (file) => files.has(file),
           readFileSync(file) {
-            assert.equal(file, runtimePath);
+            assert.ok([runtimePath, localConfigPath].includes(file));
             if (!files.has(file)) throw new Error('missing runtime');
-            return JSON.stringify({ engineRoot, python, uninstallPython, dependencyProfile });
+            return JSON.stringify(file === runtimePath ? runtime : localConfig);
           }
         };
       }
@@ -201,8 +193,10 @@ function harness({
   const extension = sandbox.module.exports;
   extension.activate({ subscriptions: [] });
   return {
-    state, document, editor, files, cli, runtimePath, marker, engineRoot, uninstallPython, python,
-    children, edits, diffs, notices, contexts, prompts, timers, extension, tasks, clipboardWrites,
+    state, document, editor, files, cli, runtime, runtimePath, localConfig, localConfigPath,
+    marker, engineRoot, uninstallScript, uninstallPython, python,
+    children, edits, editorCommands, notices, contexts, prompts, timers, extension, tasks, clipboardWrites,
+    window: vscode.window,
     run: (name) => commands.get('pylanceIndentHelper.' + name)()
   };
 }
@@ -220,7 +214,6 @@ test('cursor in a triple-quoted prompt sends and replaces only that prompt in ev
   for (const command of ['instantFormat', 'deepFormat', 'ghostMode', 'silentFix', 'localAi']) {
     const h = harness({ text: original, selected: [cursor, cursor] });
     h.state.send = 'Gửi';
-    h.state.apply = 'Áp dụng';
     const request = h.run(command);
     await flush();
     assert.equal(JSON.parse(h.children[0].input).text, second);
@@ -230,7 +223,7 @@ test('cursor in a triple-quoted prompt sends and replaces only that prompt in ev
     finish(h.children[0], 'print(2)');
     await request;
     await flush();
-    assert.equal(h.diffs[0].proposed, original.replace(second, 'print(2)'));
+    assert.equal(h.document.getText(), original.replace(second, 'print(2)'));
     assert.equal(h.edits[0].range.start, original.indexOf(second));
     assert.equal(h.edits[0].range.end, original.indexOf(second) + second.length);
   }
@@ -251,14 +244,13 @@ test('selecting text inside a quoted prompt expands the replacement to both deli
   const original = '"""Đề đầu"""\n\n"""Đề cần giải"""\n';
   const start = original.indexOf('Đề cần giải');
   const h = harness({ text: original, selected: [start, start + 'Đề cần giải'.length] });
-  h.state.apply = 'Áp dụng';
   const request = h.run('instantFormat');
   await flush();
   assert.equal(JSON.parse(h.children[0].input).text, '"""Đề cần giải"""');
   finish(h.children[0], 'print(2)');
   await request;
   await flush();
-  assert.equal(h.diffs[0].proposed, '"""Đề đầu"""\n\nprint(2)\n');
+  assert.equal(h.document.getText(), '"""Đề đầu"""\n\nprint(2)\n');
   assert.equal(h.edits[0].range.start, start - 3);
   assert.equal(h.edits[0].range.end, original.length - 1);
 });
@@ -275,23 +267,37 @@ test('a no-result notification does not block the next request', async () => {
   assert.equal(h.children.length, 2);
   finish(h.children[1]);
   await retry;
-  assert.equal(h.diffs.length, 1);
+  assert.equal(h.edits.length, 1);
 });
 
-test('Alt+5 requests Local AI without credentials or Cloud and opens a preview', async () => {
+test('Alt+5 requests Ollama and inserts the result in the current editor', async () => {
   const packageJson = require('../shells/vscode_ext/package.json');
   assert.ok(packageJson.contributes.keybindings.some(({ command, key }) => command === 'pylanceIndentHelper.localAi' && key === 'alt+5'));
   const h = harness();
   const pending = h.run('localAi');
   await flush();
   assert.deepEqual(JSON.parse(h.children[0].input), {
-    text: '# Bài mẫu', mode: 'full', verify: true, allow_cloud: false, allow_local: true
+    text: '# Bài mẫu', mode: 'local', verify: true, allow_cloud: false, allow_local: true
   });
   assert.equal(h.prompts.length, 0);
-  finish(h.children[0]);
+  finish(h.children[0], 'print("Đáp án")', { tier_used: 'tier2_ollama', validation_status: 'syntax_checked' });
   await pending;
-  assert.equal(h.diffs.length, 1);
+  assert.deepEqual(h.editorCommands, []);
+  assert.deepEqual(h.notices, [{ kind: 'status', message: 'Đã chèn mã · Ollama · Đã kiểm tra cú pháp' }]);
+  assert.equal(h.document.getText(), 'print("Đáp án")');
+  assert.equal(h.edits.length, 1);
   assert.equal(h.tasks.length, 0);
+
+  const retry = h.run('localAi');
+  await flush();
+  finish(h.children[1], '', {
+    tier_used: 'tier2_ollama',
+    validation_status: 'unsupported',
+    diagnostics: ['Không kết nối được Ollama cục bộ.']
+  });
+  await retry;
+  assert.match(h.notices.at(-1).message, /Ollama · Chưa có đề xuất.*Không kết nối/);
+  assert.equal(h.edits.length, 1);
 });
 
 test('saved-file command launches a native task with the tool interpreter and file as a separate argument', async () => {
@@ -308,10 +314,10 @@ test('saved-file command launches a native task with the tool interpreter and fi
   assert.equal(h.children.length, 0);
 });
 
-test('saved-file command rejects dirty files, previews, and restricted workspaces', async () => {
+test('saved-file command rejects dirty files, untitled files, and restricted workspaces', async () => {
   for (const [options, message] of [
     [{ isDirty: true }, /Lưu các thay đổi/],
-    [{ scheme: 'python-practice-preview' }, /Mở file .py đã lưu/],
+    [{ scheme: 'untitled' }, /Mở file .py đã lưu/],
     [{ isTrusted: false }, /Restricted Mode/]
   ]) {
     const h = harness(options);
@@ -321,9 +327,8 @@ test('saved-file command rejects dirty files, previews, and restricted workspace
   }
 });
 
-test('Apply surfaces package guidance and the runtime command only copies a path when requested', async () => {
+test('inserting code surfaces package guidance and the runtime command only copies a path on request', async () => {
   const h = harness();
-  h.state.apply = 'Áp dụng';
   const pending = h.run('instantFormat');
   await flush();
   finish(h.children[0], 'from simpleai.search import SearchProblem\nimport sympy');
@@ -341,29 +346,26 @@ test('Apply surfaces package guidance and the runtime command only copies a path
   assert.deepEqual(h.clipboardWrites, [h.python]);
 });
 
-test('offline selection uses only selected input, previews whole diff, and edits selection only on Apply', async () => {
+test('offline selection is replaced directly, preserving surrounding text and undo stops', async () => {
   const text = 'before\r\n# selected\r\nafter';
   const start = text.indexOf('#');
   const end = text.indexOf('\r\nafter');
   const h = harness({ text, selected: [start, end] });
-  let apply;
-  h.state.confirmPreview = () => new Promise((resolve) => { apply = resolve; });
   const pending = h.run('instantFormat');
   await flush();
   assert.deepEqual(JSON.parse(h.children[0].input), {
     text: '# selected', mode: 'instant', verify: true, allow_cloud: false, allow_local: false
   });
+  assert.equal(h.document.getText(), text);
   finish(h.children[0], 'x = 1\nprint(x)');
-  await flush();
-  assert.equal(h.diffs[0].original, text);
-  assert.equal(h.diffs[0].proposed, 'before\r\nx = 1\r\nprint(x)\r\nafter');
-  assert.equal(h.edits.length, 0);
-  apply('Áp dụng');
   await pending;
-  await flush();
+  assert.deepEqual(h.editorCommands, []);
   assert.equal(h.edits.length, 1);
   assert.equal(h.edits[0].range.start, start);
   assert.equal(h.edits[0].range.end, end);
+  assert.equal(h.edits[0].options.undoStopBefore, true);
+  assert.equal(h.edits[0].options.undoStopAfter, true);
+  assert.equal(h.document.getText(), 'before\r\nx = 1\r\nprint(x)\r\nafter');
 });
 
 test('a changed document version while processing drops the result', async () => {
@@ -374,47 +376,41 @@ test('a changed document version while processing drops the result', async () =>
   finish(h.children[0]);
   await pending;
   assert.equal(h.edits.length, 0);
-  assert.equal(h.diffs.length, 0);
   assert.match(h.notices.at(-1).message, /đã thay đổi/);
 });
 
-test('changing the selection after preview prevents Apply', async () => {
-  const h = harness({ selected: [0, 3] });
-  h.state.confirmPreview = () => {
-    h.editor.selection = { isEmpty: false, start: 0, end: 2 };
-    return 'Áp dụng';
-  };
-  const pending = h.run('instantFormat');
-  await flush();
-  finish(h.children[0]);
-  await pending;
-  await flush();
-  assert.equal(h.diffs.length, 1);
-  assert.equal(h.edits.length, 0);
-  assert.match(h.notices.at(-1).message, /xem trước đã hết hiệu lực/);
+test('changing selection or leaving the editor while processing drops the result', async () => {
+  for (const action of ['selection', 'editor']) {
+    const h = harness({ selected: [0, 3] });
+    const pending = h.run('instantFormat');
+    await flush();
+    if (action === 'selection') h.editor.selection = { isEmpty: false, start: 0, end: 2 };
+    else h.window.activeTextEditor = undefined;
+    finish(h.children[0]);
+    await pending;
+    assert.equal(h.edits.length, 0);
+    assert.match(h.notices.at(-1).message, /đã thay đổi/);
+  }
 });
 
-test('an older preview cannot apply after the user starts a new request', async () => {
+test('only the newest request can insert a result', async () => {
   const h = harness();
-  let applyOld;
-  h.state.confirmPreview = () => new Promise((resolve) => { applyOld = resolve; });
   const first = h.run('instantFormat');
   await flush();
-  finish(h.children[0]);
-  await first;
-  h.state.confirmPreview = undefined;
   const second = h.run('deepFormat');
   await flush();
   assert.equal(h.children.length, 2);
-  applyOld('Áp dụng');
-  finish(h.children[1]);
-  await second;
-  await flush();
+  assert.equal(h.children[0].killed, true);
+  finish(h.children[0], 'print("old")');
+  await first;
   assert.equal(h.edits.length, 0);
-  assert.equal(h.diffs.length, 2);
+  finish(h.children[1], 'print("new")');
+  await second;
+  assert.equal(h.edits.length, 1);
+  assert.equal(h.document.getText(), 'print("new")');
 });
 
-test('cancel and external removal prevent late results from opening a preview', async () => {
+test('cancel and external removal prevent late suggestions', async () => {
   for (const action of ['cancel', 'uninstall']) {
     const h = harness();
     const pending = h.run('instantFormat');
@@ -428,7 +424,6 @@ test('cancel and external removal prevent late results from opening a preview', 
     assert.equal(h.children[0].killed, true);
     finish(h.children[0]);
     await pending;
-    assert.equal(h.diffs.length, 0);
     assert.equal(h.edits.length, 0);
     assert.equal(h.contexts.at(-1)[1], false);
     assert.equal(h.timers.size, 0);
@@ -442,7 +437,6 @@ test('unsupported input and empty editor leave the document intact', async () =>
   finish(h.children[0], '', { validation_status: 'unsupported', diagnostics: ['Ràng buộc chưa có trong mẫu.'] });
   await pending;
   assert.equal(h.edits.length, 0);
-  assert.equal(h.diffs.length, 0);
   assert.match(h.notices.at(-1).message, /Ngoài phạm vi hỗ trợ.*Ràng buộc/);
   const empty = harness({ text: '  ' });
   await empty.run('instantFormat');
@@ -454,6 +448,7 @@ test('Cloud requires confirmation and sends only the chosen provider key in chil
   const h = harness();
   await h.run('ghostMode');
   assert.equal(h.children.length, 0);
+  assert.equal(h.edits.length, 0);
   assert.equal(h.prompts[0].password, true);
   h.state.send = 'Gửi';
   let pending = h.run('ghostMode');
@@ -467,6 +462,7 @@ test('Cloud requires confirmation and sends only the chosen provider key in chil
   assert.ok(!JSON.stringify(h.children[0].options.env).includes('fixture-api-key'));
   finish(h.children[0]);
   await pending;
+  assert.equal(h.edits.length, 1);
 
   const count = h.prompts.length;
   pending = h.run('ghostMode');
@@ -490,7 +486,9 @@ test('missing installation never chooses a source path', async () => {
   assert.match(h.notices.at(-1).message, /setup_nhanh\.bat/);
 });
 
-test('uninstall works without an editor and reports success only after exit 0', async () => {
+test('Alt+0 confirms and invokes only the BASE uninstall without a success notice or reload', async () => {
+  const packageJson = require('../shells/vscode_ext/package.json');
+  assert.ok(packageJson.contributes.keybindings.some(({ command, key }) => command === 'pylanceIndentHelper.uninstallAll' && key === 'alt+0'));
   const h = harness({ noEditor: true });
   await h.run('uninstallAll');
   assert.equal(h.children.length, 0);
@@ -499,24 +497,91 @@ test('uninstall works without an editor and reports success only after exit 0', 
   await flush();
   assert.equal(h.children.length, 1);
   assert.equal(h.children[0].executable, h.uninstallPython);
+  assert.deepEqual([...h.children[0].args], [h.uninstallScript, '--base-only']);
   assert.notEqual(h.children[0].options.cwd, h.engineRoot);
-  assert.ok(!h.notices.some((notice) => notice.message.startsWith('Đã gỡ')));
+  assert.ok(h.notices.every(({ kind, options }) => kind === 'warning' && options.modal));
   h.children[0].emit('close', 0);
   await pending;
-  assert.match(h.notices.at(-1).message, /Đã gỡ/);
+  assert.ok(h.notices.every(({ kind }) => kind === 'warning'));
+  assert.deepEqual(h.editorCommands, []);
   assert.equal(h.edits.length, 0);
 });
 
-test('failed or unavailable uninstall names the manual fallback', async () => {
-  for (const missingUninstaller of [true, false]) {
-    const h = harness({ missingUninstaller });
+test('failed, unavailable or legacy uninstall names the BASE manual fallback', async () => {
+  for (const options of [{ missingUninstaller: true }, {}, { legacyLocalModel: 'local:1b' }]) {
+    const h = harness(options);
+    if (options.legacyLocalModel) delete h.runtime.baseEnabled;
     h.state.uninstall = 'Gỡ cài đặt';
     const pending = h.run('uninstallAll');
     await flush();
-    if (!missingUninstaller) h.children[0].emit('close', 1);
+    if (options.missingUninstaller || options.legacyLocalModel) assert.equal(h.children.length, 0);
+    else h.children[0].emit('close', 1);
     await pending;
     assert.equal(h.notices.at(-1).kind, 'error');
-    assert.match(h.notices.at(-1).message, /go_cai_dat\.bat/);
+    assert.match(h.notices.at(-1).message, /go_cai_dat\.bat --base-only/);
+    assert.equal(h.edits.length, 0);
+  }
+});
+
+test('Alt+0 waits for active Ollama and Alt+5 can use the lean runtime afterward', async () => {
+  const h = harness();
+  const local = h.run('localAi');
+  await flush();
+  h.state.uninstall = 'Gỡ cài đặt';
+  const removal = h.run('uninstallAll');
+  await flush();
+  assert.equal(h.children.length, 1);
+  assert.equal(h.children[0].killed, undefined);
+  finish(h.children[0], 'print(1)');
+  await local;
+  await flush();
+  assert.equal(h.children.length, 2);
+  const next = h.run('localAi');
+  await flush();
+  assert.equal(h.children.length, 2);
+  h.runtime.baseEnabled = false;
+  h.runtime.python = path.join(h.engineRoot, 'lean-python.exe');
+  h.files.add(h.runtime.python);
+  h.files.delete(h.python);
+  h.children[1].emit('close', 0);
+  await removal;
+  await flush();
+  assert.equal(h.children[2].executable, h.runtime.python);
+  finish(h.children[2], 'print(2)');
+  await next;
+  assert.equal(h.document.getText(), 'print(2)');
+  await h.run('deepFormat');
+  assert.match(h.notices.at(-1).message, /setup_nhanh\.bat.*phần cơ bản/);
+  assert.equal(h.children.length, 3);
+});
+
+test('Alt+5 asks for independent Ollama setup and accepts legacy model records', async () => {
+  const fresh = harness({ localModel: null });
+  await fresh.run('localAi');
+  assert.equal(fresh.children.length, 0);
+  assert.match(fresh.notices.at(-1).message, /setup_ollama\.bat/);
+  fresh.files.delete(fresh.runtimePath);
+  await fresh.run('localAi');
+  assert.match(fresh.notices.at(-1).message, /setup_ollama\.bat/);
+
+  const legacy = harness({ localModel: null, legacyLocalModel: 'local:1b' });
+  delete legacy.runtime.baseEnabled;
+  const pending = legacy.run('localAi');
+  await flush();
+  finish(legacy.children[0]);
+  await pending;
+  assert.equal(legacy.edits.length, 1);
+});
+
+test('removing Ollama setup or switching models drops an active Ollama result', async () => {
+  for (const remove of [true, false]) {
+    const h = harness();
+    const pending = h.run('localAi');
+    await flush();
+    if (remove) h.files.delete(h.localConfigPath);
+    else h.localConfig.localModel = 'another:1b';
+    finish(h.children[0]);
+    await pending;
     assert.equal(h.edits.length, 0);
   }
 });

@@ -215,7 +215,7 @@ def call_tier2_local_llm(
         )
     except HTTPError as exc:
         if exc.code == 404:
-            messages.append(f"Ollama chưa có model {model}. Chạy setup_nhanh.bat --local hoặc tải đúng model đã chọn.")
+            messages.append(f"Ollama chưa có model {model}. Chạy setup_ollama.bat để tải model.")
         else:
             messages.append(_provider_error("Ollama", exc))
         return None

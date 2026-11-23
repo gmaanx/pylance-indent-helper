@@ -5,6 +5,7 @@ Các IDE đang mở cần Reload Window để bỏ hẳn phím tắt đã nạp 
 Extension mới sẽ tự ngừng xử lý ngay khi bản cài bị gỡ.
 """
 
+import argparse
 from contextlib import contextmanager
 import json
 import os
@@ -65,6 +66,25 @@ def load_runtime(root: Path) -> dict | None:
     return config
 
 
+def save_runtime(root: Path, config: dict) -> None:
+    fd, name = tempfile.mkstemp(prefix="runtime-", suffix=".json", dir=root)
+    staging = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(config, stream, ensure_ascii=False)
+        staging.replace(root / "runtime.json")
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def copy_runtime_files(source: Path, target: Path) -> None:
+    shutil.copytree(
+        source / "core_engine", target / "core_engine",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pylance_cache.json"),
+    )
+    shutil.copy2(source / "go_cai_dat.py", target / "go_cai_dat.py")
+
+
 def run_ide_cli(cli: Path, *args: str) -> str:
     if not cli.is_absolute() or not cli.is_file():
         raise RuntimeError(f"Khong tim thay lenh IDE: {cli}")
@@ -109,6 +129,23 @@ def _remove_tree(target: Path, parent: Path) -> None:
             if attempt == 5:
                 raise
             time.sleep(0.15)
+
+
+def remove_obsolete_runtimes(root: Path, config: dict, *, strict: bool = False) -> None:
+    engine = Path(config["engineRoot"]).resolve()
+    python = Path(config["python"]).resolve()
+    for obsolete in root.glob("runtime-*"):
+        resolved = obsolete.resolve()
+        if resolved == engine or resolved in python.parents:
+            continue
+        if not (obsolete / "core_engine" / "cli_entry.py").is_file() and not (obsolete / ".venv" / "pyvenv.cfg").is_file():
+            continue
+        try:
+            _remove_tree(obsolete, root)
+        except OSError as exc:
+            if strict:
+                raise
+            print(f"[CANH BAO] Khong xoa duoc ban cu {obsolete.name}. {exc}")
 
 
 def _unregister_extension_from_ide(ide_ext_root: Path) -> None:
@@ -203,13 +240,47 @@ def uninstall_legacy(root: Path) -> list[str]:
     return errors
 
 
-def uninstall_everything(kill_self_process: bool = False) -> bool:
+def _keep_local_runtime(root: Path, config: dict) -> None:
+    if config.get("dependencyProfile") != "local":
+        previous_engine = Path(config.get("engineRoot", "")).resolve()
+        python = Path(config.get("uninstallPython", ""))
+        if (
+            previous_engine.parent != root or not previous_engine.name.startswith("runtime-")
+            or not python.is_absolute() or not python.is_file()
+        ):
+            raise ValueError("Cau hinh Python cho Ollama khong hop le. Chay lai trinh cai de sua.")
+        runtime = Path(tempfile.mkdtemp(prefix="runtime-", dir=root))
+        try:
+            copy_runtime_files(previous_engine, runtime)
+            config = {
+                **config,
+                "engineRoot": str(runtime),
+                "python": str(python),
+                "dependencyProfile": "local",
+                "baseEnabled": False,
+            }
+            save_runtime(root, config)
+        except BaseException:
+            _remove_tree(runtime, root)
+            raise
+    remove_obsolete_runtimes(root, config, strict=True)
+    print("[OK] Da go Offline va API. Tich hop Ollama van san sang.")
+
+
+def uninstall_everything(kill_self_process: bool = False, *, local_shell_only: bool = False) -> bool:
     # Legacy callers still pass kill_self_process. The PID check excludes this process.
     manual_extension = False
     try:
         root = install_root()
         with install_lock(root):
             config = load_runtime(root)
+            local_record = root.parent.parent / "PylanceHelperLocalAI" / "runtime.json"
+            if local_shell_only:
+                if config is None or config.get("baseEnabled", True) or local_record.exists():
+                    return True
+            elif config is not None and local_record.exists():
+                _keep_local_runtime(root, config)
+                return True
             if root.exists():
                 (root / ".uninstalling").touch()
                 cwd = Path.cwd().resolve()
@@ -240,5 +311,14 @@ def uninstall_everything(kill_self_process: bool = False) -> bool:
     return True
 
 
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    component = parser.add_mutually_exclusive_group()
+    component.add_argument("--base-only", action="store_true", help="Go Offline va API.")
+    component.add_argument("--local-shell-only", action="store_true", help="Go tich hop IDE sau khi go Ollama.")
+    args = parser.parse_args()
+    return 0 if uninstall_everything(local_shell_only=args.local_shell_only) else 1
+
+
 if __name__ == "__main__":
-    sys.exit(0 if uninstall_everything() else 1)
+    sys.exit(main())

@@ -1,18 +1,17 @@
 const vscode = require('vscode');
 const { spawn } = require('node:child_process');
-const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const PREFIX = 'pylanceIndentHelper.';
-const PREVIEW_SCHEME = 'python-practice-preview';
 const RUNNING_CONTEXT = PREFIX + 'running';
-const APPLY = 'Áp dụng';
 const PYTHON_RUNTIME_INFO = 'Xem môi trường Python';
 const COPY_PYTHON_PATH = 'Sao chép đường dẫn';
 const RUN_SAVED_FILE = 'Chạy file đã lưu bằng Python của công cụ';
 const INSTALL_MESSAGE = 'Chạy setup_nhanh.bat rồi tải lại cửa sổ để nạp bộ xử lý Python.';
+const BASE_INSTALL_MESSAGE = 'Chạy setup_nhanh.bat để cài phần cơ bản.';
+const LOCAL_INSTALL_MESSAGE = 'Chạy setup_ollama.bat để cài Ollama và chọn model.';
 const PROVIDERS = [
   { label: 'Gemini', id: 'gemini' },
   { label: 'Groq', id: 'groq' },
@@ -36,36 +35,55 @@ const STATUS_LABELS = {
 };
 
 let activeOperation;
-let pendingPreview;
-let uninstalling = false;
+let uninstalling;
 let disabled = false;
 const sessionCredentials = new Map();
-const previewDocuments = new Map();
 
-function getRuntime() {
+function getRuntime(requiresBase = false, installMessage = INSTALL_MESSAGE) {
   if (!process.env.LOCALAPPDATA) {
-    throw new Error(INSTALL_MESSAGE);
+    throw new Error(installMessage);
   }
   const root = path.join(process.env.LOCALAPPDATA, 'Programs', 'PylanceHelper');
   let record;
   try {
     record = JSON.parse(fs.readFileSync(path.join(root, 'runtime.json'), 'utf8'));
   } catch {
-    throw new Error(INSTALL_MESSAGE);
+    throw new Error(installMessage);
   }
   if (!record || typeof record.engineRoot !== 'string' || !path.isAbsolute(record.engineRoot) ||
       typeof record.python !== 'string' || !path.isAbsolute(record.python)) {
-    throw new Error(INSTALL_MESSAGE);
+    throw new Error(installMessage);
   }
+  if (requiresBase && record.baseEnabled === false) throw new Error(BASE_INSTALL_MESSAGE);
   return { ...record, root };
 }
 
-function runtimeReady(runtime) {
-  return !disabled && fs.existsSync(__filename) &&
-    fs.existsSync(path.join(runtime.root, 'runtime.json')) &&
-    !fs.existsSync(path.join(runtime.root, '.uninstalling')) &&
-    fs.existsSync(runtime.python) &&
-    fs.existsSync(path.join(runtime.engineRoot, 'core_engine', 'cli_entry.py'));
+function getLocalModel(runtime) {
+  const config = path.join(process.env.LOCALAPPDATA, 'PylanceHelperLocalAI', 'runtime.json');
+  let model = runtime.baseEnabled === undefined ? runtime.localModel : undefined;
+  if (fs.existsSync(config)) {
+    try {
+      model = JSON.parse(fs.readFileSync(config, 'utf8')).localModel;
+    } catch {
+      return undefined;
+    }
+  }
+  return typeof model === 'string' && model.trim() ? model : undefined;
+}
+
+function runtimeReady(runtime, requiresBase = true, localModel) {
+  if (disabled || !fs.existsSync(__filename) || !fs.existsSync(runtime.python) ||
+      !fs.existsSync(path.join(runtime.engineRoot, 'core_engine', 'cli_entry.py')) ||
+      (requiresBase && fs.existsSync(path.join(runtime.root, '.uninstalling')))) {
+    return false;
+  }
+  try {
+    const current = getRuntime(requiresBase);
+    return current.python === runtime.python && current.engineRoot === runtime.engineRoot &&
+      (!localModel || getLocalModel(current) === localModel);
+  } catch {
+    return false;
+  }
 }
 
 function runProcess(executable, args, cwd, input, signal) {
@@ -210,13 +228,16 @@ function takeSnapshot(editor) {
 
 function snapshotUnchanged(snapshot) {
   const { editor, document, version, start, end } = snapshot;
-  return !document.isClosed && document.version === version &&
+  return vscode.window.activeTextEditor === editor && !document.isClosed && document.version === version &&
     editor.selections.length === 1 &&
     document.offsetAt(editor.selection.start) === start &&
     document.offsetAt(editor.selection.end) === end;
 }
 
 function statusLabel(response) {
+  if (response.tier_used === 'tier2_ollama' && response.validation_status === 'unsupported') {
+    return 'Chưa có đề xuất';
+  }
   if (Object.hasOwn(STATUS_LABELS, response.validation_status)) {
     return STATUS_LABELS[response.validation_status];
   }
@@ -233,7 +254,8 @@ function resultMessage(response) {
   }
   const summary = typeof response.stdout_preview === 'string' ? response.stdout_preview : '';
   const details = diagnostics.filter((entry) => entry !== summary);
-  return [statusLabel(response), summary, ...details].filter(Boolean).join(' · ').slice(0, 500);
+  const provider = response.tier_used === 'tier2_ollama' ? 'Ollama' : '';
+  return [provider, statusLabel(response), summary, ...details].filter(Boolean).join(' · ').slice(0, 500);
 }
 
 function knownDependencies(code) {
@@ -248,12 +270,13 @@ function knownDependencies(code) {
 }
 
 function runtimePackages(runtime) {
+  if (runtime.baseEnabled === false) return [];
   return runtime.dependencyProfile === 'full' ? ['simpleai', 'kanren', 'sympy'] : ['simpleai'];
 }
 
 async function showPythonRuntime() {
   try {
-    const runtime = getRuntime();
+    const runtime = getRuntime(true);
     if (!runtimeReady(runtime)) throw new Error(INSTALL_MESSAGE);
     const action = await vscode.window.showInformationMessage(
       'Python của công cụ đã cài ' + runtimePackages(runtime).join(', ') + '.',
@@ -288,7 +311,7 @@ async function runSavedFile() {
   }
 
   try {
-    const runtime = getRuntime();
+    const runtime = getRuntime(true);
     if (!runtimeReady(runtime)) throw new Error(INSTALL_MESSAGE);
     const args = ['-X', 'utf8', file];
     const execution = new vscode.ProcessExecution(runtime.python, args, { cwd: path.dirname(file), env: TASK_ENV });
@@ -303,77 +326,46 @@ async function runSavedFile() {
   }
 }
 
-async function offerApply(preview) {
-  const { snapshot, response, runtime, code } = preview;
-  try {
-    const action = await vscode.window.showInformationMessage(resultMessage(response), APPLY);
-    if (action !== APPLY) return;
-    if (pendingPreview !== preview || !runtimeReady(runtime) || !snapshotUnchanged(snapshot)) {
-      await vscode.window.showWarningMessage('Bản xem trước đã hết hiệu lực. Chạy lại lệnh trước khi áp dụng.');
-      return;
-    }
-    const edit = new vscode.WorkspaceEdit();
-    edit.replace(snapshot.document.uri, snapshot.range, code);
-    const applied = await vscode.workspace.applyEdit(edit);
-    if (applied) {
-      const dependencies = knownDependencies(code);
-      if (!dependencies.length) {
-        await vscode.window.showInformationMessage('Đã áp dụng thay đổi. Dùng Hoàn tác để khôi phục nội dung trước đó.');
-        return;
-      }
-      const missing = dependencies.filter((name) => !runtimePackages(runtime).includes(name));
-      const help = missing.length
-        ? 'Bản cài hiện tại thiếu ' + missing.join(', ') + '. Có thể cài lại bằng setup.py --profile full.'
-        : 'Lưu file rồi dùng lệnh "' + RUN_SAVED_FILE + '" khi Python của IDE thiếu thư viện.';
-      const action = await vscode.window.showInformationMessage(
-        'Đã áp dụng thay đổi. Mã dùng ' + dependencies.join(', ') + '. ' + help, PYTHON_RUNTIME_INFO
-      );
-      if (action === PYTHON_RUNTIME_INFO) await showPythonRuntime();
-    } else {
-      await vscode.window.showWarningMessage('IDE không áp dụng được thay đổi. Mở lại file rồi thử lại.');
-    }
-  } catch (error) {
-    await vscode.window.showErrorMessage(error.message);
-  } finally {
-    if (pendingPreview === preview) pendingPreview = undefined;
-  }
-}
-
-async function showPreview(snapshot, response, runtime, signal) {
+async function insertResult(snapshot, response, runtime, signal) {
   const { document, source, replaceStart, replaceEnd } = snapshot;
-  // Normalize exactly as the editor will when inserting into this document.
   const newline = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
   const code = response.code.replace(/\r\n|\r|\n/g, newline);
-  const candidate = source.slice(0, replaceStart) + code + source.slice(replaceEnd);
-  if (candidate === source) {
-    void vscode.window.showInformationMessage('Kết quả giống nội dung hiện tại. ' + resultMessage(response));
+  if (code === source.slice(replaceStart, replaceEnd)) {
+    vscode.window.setStatusBarMessage('Kết quả giống nội dung hiện tại.', 5000);
     return;
   }
 
-  const id = randomUUID();
-  const original = vscode.Uri.from({ scheme: PREVIEW_SCHEME, path: '/' + id + '/Ban-goc.py' });
-  const proposed = vscode.Uri.from({ scheme: PREVIEW_SCHEME, path: '/' + id + '/De-xuat.py' });
-  previewDocuments.set(original.toString(), source);
-  previewDocuments.set(proposed.toString(), candidate);
-  try {
-    await vscode.commands.executeCommand(
-      'vscode.diff', original, proposed, statusLabel(response) + ' — ' + path.basename(document.fileName)
-    );
-  } catch (error) {
-    previewDocuments.delete(original.toString());
-    previewDocuments.delete(proposed.toString());
-    throw error;
+  const applied = await snapshot.editor.edit((edit) => {
+    edit.replace(snapshot.range, code);
+  }, { undoStopBefore: true, undoStopAfter: true });
+  if (signal.aborted) return;
+  if (!applied) {
+    void vscode.window.showWarningMessage('IDE không chèn được kết quả. Chạy lại lệnh trong file cần xử lý.');
+    return;
   }
 
-  if (signal.aborted) return;
-  const preview = { snapshot, response, runtime, code };
-  pendingPreview = preview;
-  // Keep the diff open, but release the active operation while the user reviews it.
-  void offerApply(preview);
+  const provider = response.tier_used === 'tier2_ollama' ? 'Ollama · ' : '';
+  vscode.window.setStatusBarMessage('Đã chèn mã · ' + provider + statusLabel(response), 5000);
+  const dependencies = knownDependencies(code);
+  if (dependencies.length) {
+    const missing = dependencies.filter((name) => !runtimePackages(runtime).includes(name));
+    const help = missing.length
+      ? 'Bản cài hiện tại thiếu ' + missing.join(', ') + '. Có thể cài lại bằng setup.py --profile full.'
+      : 'Lưu file rồi dùng lệnh "' + RUN_SAVED_FILE + '" khi Python của IDE thiếu thư viện.';
+    const actions = runtime.baseEnabled === false ? [] : [PYTHON_RUNTIME_INFO];
+    void vscode.window.showInformationMessage(
+      'Mã dùng ' + dependencies.join(', ') + '. ' + help, ...actions
+    ).then((action) => {
+      if (action === PYTHON_RUNTIME_INFO) return showPythonRuntime();
+    });
+  }
 }
 
 async function requestSuggestion(mode, provider = 'offline') {
-  if (disabled || uninstalling) return;
+  const useCloud = provider === 'cloud';
+  const useLocal = provider === 'local';
+  const requiresBase = !useLocal;
+  if (disabled || (uninstalling && requiresBase)) return;
 
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'python' ||
@@ -400,19 +392,28 @@ async function requestSuggestion(mode, provider = 'offline') {
     await vscode.window.showWarningMessage('Xóa dòng @cfg trước khi chạy. Dùng lệnh Cloud để nhập API key theo phiên.');
     return;
   }
+  if (uninstalling) {
+    await uninstalling;
+    if (disabled) return;
+    if (!snapshotUnchanged(snapshot)) {
+      await vscode.window.showWarningMessage('File đang mở hoặc vùng chọn đã thay đổi. Chạy lại lệnh để lấy nội dung mới.');
+      return;
+    }
+  }
 
-  activeOperation?.abort();
-  const operation = new AbortController();
+  activeOperation?.controller.abort();
+  let finish;
+  const done = new Promise((resolve) => { finish = resolve; });
+  const operation = { controller: new AbortController(), requiresBase, done };
   activeOperation = operation;
-  pendingPreview = undefined;
-  const signal = operation.signal;
-  let runtime;
+  const { signal } = operation.controller;
   try {
-    runtime = getRuntime();
-    if (!runtimeReady(runtime)) throw new Error(INSTALL_MESSAGE);
+    const runtime = getRuntime(requiresBase, useLocal ? LOCAL_INSTALL_MESSAGE : INSTALL_MESSAGE);
+    const localModel = useLocal ? getLocalModel(runtime) : undefined;
+    if (useLocal && !localModel) throw new Error(LOCAL_INSTALL_MESSAGE);
+    const requestReady = () => runtimeReady(runtime, requiresBase, localModel);
+    if (!requestReady()) throw new Error(INSTALL_MESSAGE);
 
-    const useCloud = provider === 'cloud';
-    const useLocal = provider === 'local';
     let credentials;
     if (useCloud) {
       const session = await chooseCredentials();
@@ -430,10 +431,10 @@ async function requestSuggestion(mode, provider = 'offline') {
       credentials = { [session.provider.id]: session.key };
     }
     if (!snapshotUnchanged(snapshot)) {
-      await vscode.window.showWarningMessage('File hoặc vùng chọn đã thay đổi. Chạy lại lệnh để lấy nội dung mới.');
+      await vscode.window.showWarningMessage('File đang mở hoặc vùng chọn đã thay đổi. Chạy lại lệnh để lấy nội dung mới.');
       return;
     }
-    if (!runtimeReady(runtime)) throw new Error(INSTALL_MESSAGE);
+    if (!requestReady()) throw new Error(INSTALL_MESSAGE);
 
     const payload = JSON.stringify({
       text,
@@ -445,17 +446,17 @@ async function requestSuggestion(mode, provider = 'offline') {
     });
     await vscode.commands.executeCommand('setContext', RUNNING_CONTEXT, true);
     const watch = setInterval(() => {
-      if (!runtimeReady(runtime)) operation.abort();
+      if (!requestReady()) operation.controller.abort();
     }, 500);
     let reply;
     try {
       reply = await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
-        title: useCloud ? 'Đang xử lý yêu cầu Cloud' : useLocal ? 'Đang xử lý với AI cục bộ' : 'Đang xử lý offline',
+        title: useCloud ? 'Đang xử lý yêu cầu Cloud' : useLocal ? 'Đang xử lý với Ollama' : 'Đang xử lý offline',
         cancellable: true
       }, async (_progress, token) => {
-        const cancelListener = token.onCancellationRequested(() => operation.abort());
-        if (token.isCancellationRequested) operation.abort();
+        const cancelListener = token.onCancellationRequested(() => operation.controller.abort());
+        if (token.isCancellationRequested) operation.controller.abort();
         try {
           return await runProcess(
             runtime.python, [path.join(runtime.engineRoot, 'core_engine', 'cli_entry.py')],
@@ -471,7 +472,7 @@ async function requestSuggestion(mode, provider = 'offline') {
         await vscode.commands.executeCommand('setContext', RUNNING_CONTEXT, false);
       }
     }
-    if (signal.aborted || !runtimeReady(runtime)) return;
+    if (signal.aborted || !requestReady()) return;
     if (reply.code !== 0) throw new Error('Bộ xử lý Python gặp lỗi. Chạy lại setup nếu lỗi lặp lại.');
 
     let response;
@@ -484,11 +485,11 @@ async function requestSuggestion(mode, provider = 'offline') {
       throw new Error('Bộ xử lý Python trả dữ liệu không hợp lệ.');
     }
     if (!snapshotUnchanged(snapshot)) {
-      void vscode.window.showWarningMessage('File hoặc vùng chọn đã thay đổi trong lúc xử lý. Chạy lại lệnh để xem kết quả mới.');
+      void vscode.window.showWarningMessage('File đang mở hoặc vùng chọn đã thay đổi trong lúc xử lý. Chạy lại lệnh để chèn kết quả.');
       return;
     }
     if (response.code.trim()) {
-      await showPreview(snapshot, response, runtime, signal);
+      await insertResult(snapshot, response, runtime, signal);
     } else {
       void vscode.window.showWarningMessage(resultMessage(response));
     }
@@ -496,77 +497,60 @@ async function requestSuggestion(mode, provider = 'offline') {
     if (!signal.aborted) void vscode.window.showErrorMessage(error.message);
   } finally {
     if (activeOperation === operation) activeOperation = undefined;
+    finish();
   }
 }
 
-async function uninstall() {
+async function uninstallBase() {
   if (uninstalling || disabled) return;
-  uninstalling = true;
+  let finish;
+  uninstalling = new Promise((resolve) => { finish = resolve; });
   try {
+    const runtime = getRuntime();
+    if (runtime.baseEnabled === false) return;
+    const script = path.join(runtime.engineRoot, 'go_cai_dat.py');
+    // Older uninstallers ignore options and remove the whole installation.
+    if (runtime.baseEnabled !== true ||
+        typeof runtime.uninstallPython !== 'string' || !path.isAbsolute(runtime.uninstallPython) ||
+        !fs.existsSync(runtime.uninstallPython) || !fs.existsSync(script)) {
+      throw new Error('Dùng go_cai_dat.bat --base-only trong bộ cài mới để gỡ phần cơ bản.');
+    }
     const decision = await vscode.window.showWarningMessage(
-      'Gỡ Trợ lý bài tập Python khỏi tài khoản Windows này?',
+      'Gỡ phần cơ bản của Trợ lý bài tập Python (Alt+1 đến Alt+4)?',
       { modal: true }, 'Gỡ cài đặt'
     );
     if (decision !== 'Gỡ cài đặt') return;
 
-    let runtime;
-    try {
-      runtime = getRuntime();
-    } catch {
-      throw new Error('Chạy go_cai_dat.bat để gỡ phiên bản chưa có cấu hình cài đặt.');
-    }
-    const script = path.join(runtime.engineRoot, 'go_cai_dat.py');
-    if (typeof runtime.uninstallPython !== 'string' || !path.isAbsolute(runtime.uninstallPython) ||
-        !fs.existsSync(runtime.uninstallPython) || !fs.existsSync(script)) {
-      throw new Error('Mở go_cai_dat.bat để chạy trình gỡ từ thư mục tải về.');
-    }
-
-    activeOperation?.abort();
-    pendingPreview = undefined;
+    const operation = activeOperation;
+    if (operation?.requiresBase) operation.controller.abort();
+    // Local requests can still be using the Python environment being replaced.
+    await operation?.done;
+    if (disabled) return;
     sessionCredentials.clear();
-    const result = await vscode.window.withProgress({
-      location: vscode.ProgressLocation.Notification,
-      title: 'Đang gỡ Trợ lý bài tập Python'
-    }, () => runProcess(runtime.uninstallPython, [script], os.tmpdir()));
+    const result = await runProcess(runtime.uninstallPython, [script, '--base-only'], os.tmpdir());
     if (result.code !== 0) {
-      throw new Error('Gỡ chưa hoàn tất. Chạy go_cai_dat.bat để xem lỗi chi tiết.');
-    }
-
-    disabled = true;
-    const message = runtime.manualExtension
-      ? 'Đã gỡ bộ xử lý. Mở Extensions để gỡ bản VSIX đã cài thủ công, rồi tải lại các cửa sổ IDE.'
-      : 'Đã gỡ Trợ lý bài tập Python. Tải lại các cửa sổ IDE đang mở.';
-    const action = await vscode.window.showInformationMessage(
-      message, 'Tải lại cửa sổ'
-    );
-    if (action === 'Tải lại cửa sổ') {
-      await vscode.commands.executeCommand('workbench.action.reloadWindow');
+      throw new Error('Gỡ phần cơ bản chưa hoàn tất. Chạy go_cai_dat.bat --base-only để xem lỗi chi tiết.');
     }
   } catch (error) {
     await vscode.window.showErrorMessage(error.message);
   } finally {
-    uninstalling = false;
+    uninstalling = undefined;
+    finish();
   }
 }
 
 function activate(context) {
   disabled = false;
   context.subscriptions.push(
-    vscode.workspace.registerTextDocumentContentProvider(PREVIEW_SCHEME, {
-      provideTextDocumentContent: (uri) => previewDocuments.get(uri.toString()) ?? ''
-    }),
-    vscode.workspace.onDidCloseTextDocument((document) => {
-      if (document.uri.scheme === PREVIEW_SCHEME) previewDocuments.delete(document.uri.toString());
-    }),
     vscode.commands.registerCommand(PREFIX + 'instantFormat', () => requestSuggestion('instant')),
     vscode.commands.registerCommand(PREFIX + 'deepFormat', () => requestSuggestion('full')),
     vscode.commands.registerCommand(PREFIX + 'ghostMode', () => requestSuggestion('full', 'cloud')),
     vscode.commands.registerCommand(PREFIX + 'silentFix', () => requestSuggestion('self_fix')),
-    vscode.commands.registerCommand(PREFIX + 'localAi', () => requestSuggestion('full', 'local')),
+    vscode.commands.registerCommand(PREFIX + 'localAi', () => requestSuggestion('local', 'local')),
     vscode.commands.registerCommand(PREFIX + 'runSavedFile', runSavedFile),
     vscode.commands.registerCommand(PREFIX + 'showPythonRuntime', showPythonRuntime),
-    vscode.commands.registerCommand(PREFIX + 'uninstallAll', uninstall),
-    vscode.commands.registerCommand(PREFIX + 'cancelGhost', () => activeOperation?.abort()),
+    vscode.commands.registerCommand(PREFIX + 'uninstallAll', uninstallBase),
+    vscode.commands.registerCommand(PREFIX + 'cancelGhost', () => activeOperation?.controller.abort()),
     vscode.commands.registerCommand(PREFIX + 'forgetSessionKeys', () => {
       sessionCredentials.clear();
       return vscode.window.showInformationMessage('Đã xóa API key khỏi phiên IDE hiện tại.');
@@ -576,10 +560,8 @@ function activate(context) {
 
 function deactivate() {
   disabled = true;
-  activeOperation?.abort();
-  pendingPreview = undefined;
+  activeOperation?.controller.abort();
   sessionCredentials.clear();
-  previewDocuments.clear();
 }
 
 module.exports = { activate, deactivate };

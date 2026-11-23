@@ -37,9 +37,8 @@ Khi file cần SimpleAI mà Python đang chọn báo `ModuleNotFoundError`, lưu
 ## Dùng trong IDE
 
 1. Mở file `.py`, đặt đề trong dấu ba nháy `"""` rồi đặt con trỏ trong khối đề. Dùng cách này cho **Alt+1** đến **Alt+5**. Có thể bôi đen một đề để chỉ định vùng cần xử lý.
-2. Bấm **Alt+1** và kiểm tra cửa sổ so sánh. Ví dụ dưới đây tìm ba số nguyên tố đầu tiên.
-3. Chọn **Áp dụng** ở thông báo của IDE để cập nhật file. Nếu file hoặc vùng chọn đã thay đổi, chạy lại lệnh để tạo bản xem trước mới.
-4. Lưu bằng **Ctrl+S**. Nếu mã có đoạn chạy thử, chọn **Bài tập Python: Chạy file đã lưu bằng Python của công cụ** trong **Ctrl+Shift+P** để xem kết quả ở Terminal. Nếu mã chỉ định nghĩa lớp hoặc hàm, cần gọi lớp hoặc hàm để thấy kết quả.
+2. Bấm **Alt+1** để chèn kết quả vào file đang mở. Ví dụ dưới đây tìm ba số nguyên tố đầu tiên. Dùng **Ctrl+Z** để hoàn tác. Nếu file hoặc vùng chọn thay đổi trong lúc xử lý, chạy lại lệnh trên nội dung mới.
+3. Lưu bằng **Ctrl+S**. Nếu mã có đoạn chạy thử, chọn **Bài tập Python: Chạy file đã lưu bằng Python của công cụ** trong **Ctrl+Shift+P** để xem kết quả ở Terminal. Nếu mã chỉ định nghĩa lớp hoặc hàm, cần gọi lớp hoặc hàm để thấy kết quả.
 
 ```python
 """
@@ -47,14 +46,14 @@ Liệt kê 3 số nguyên tố đầu tiên.
 """
 ```
 
-Nếu file có nhiều đề, chọn từng khối bằng con trỏ hoặc vùng bôi đen. Khi áp dụng, công cụ thay đúng khối đang giải. Hai đề 8-puzzle và phân ca trực có thể thử trực tiếp từ file mẫu. [thu_nghiem.py](thu_nghiem.py)
+Nếu file có nhiều đề, chọn từng khối bằng con trỏ hoặc vùng bôi đen. Công cụ thay đúng khối đang giải. Hai đề 8-puzzle và phân ca trực có thể thử trực tiếp từ file mẫu. [thu_nghiem.py](thu_nghiem.py)
 
 | Phím | Lệnh |
 | --- | --- |
 | `Alt+1` | Giải offline từ yêu cầu hoặc dữ liệu có cấu trúc |
 | `Alt+2` | Phân tích offline |
 | `Alt+3` | Dùng API Cloud với key nhập trong phiên IDE |
-| `Alt+4` | Xem đề xuất sửa code offline |
+| `Alt+4` | Kiểm tra và sửa code offline |
 | `Alt+5` | Dùng model Ollama đã tải trên máy |
 | `Alt+0` | Mở xác nhận gỡ công cụ |
 
@@ -64,7 +63,7 @@ Có thể tìm các lệnh trong **Ctrl+Shift+P**. Lệnh hủy hiện ở thôn
 
 Bộ giải offline xử lý các dạng mà nó đọc được đầy đủ dữ kiện và ràng buộc. `@solve` là định dạng tùy chọn để khai báo dữ liệu chính xác. Với đề tự do chưa có bộ giải phù hợp, chọn **Alt+3** hoặc **Alt+5** ngay trên cùng khối văn bản.
 
-Offline chỉ mở bản xem trước khi nhận diện được đặc tả hoặc khi bạn gọi đích danh mẫu tham khảo. Khi đề có điều kiện chưa hỗ trợ, tool giữ nguyên file và hiển thị chẩn đoán. Hai ví dụ lớp Python được kiểm thử từ ảnh báo lỗi dùng thư viện chuẩn.
+Chế độ offline đưa ra đề xuất khi nhận diện được đặc tả hoặc khi bạn gọi đích danh mẫu tham khảo. Khi đề có điều kiện chưa hỗ trợ, IDE hiển thị chẩn đoán. Hai ví dụ lớp Python được kiểm thử từ ảnh báo lỗi dùng thư viện chuẩn.
 
 ```python
 # @solve {"type":"vector24"}
@@ -184,7 +183,7 @@ Mỗi dòng `@solve` là một ví dụ độc lập. Bôi đen một dòng trư
 1. Lấy API key từ nhà cung cấp theo một trong các hướng dẫn bên dưới.
 2. Mở file Python, nhập đề dưới dạng comment hoặc chọn đúng vùng cần xử lý.
 3. Bấm **Alt+3** hoặc chọn **Bài tập Python: Gửi yêu cầu đến Cloud** trong Command Palette. Chọn hãng, nhập key rồi xác nhận gửi vùng chọn hoặc toàn bộ file.
-4. Kiểm tra cửa sổ so sánh và chẩn đoán. Chỉ bấm **Áp dụng** khi kết quả phù hợp.
+4. Đối chiếu mã được chèn trong file với yêu cầu. Dùng **Ctrl+Z** để hoàn tác khi cần.
 
 Key được giữ trong bộ nhớ phiên IDE. Dùng **Quên API key phiên này** để xóa. File cấu hình key kiểu cũ có thể vẫn nằm trong bản nguồn bạn từng dùng.
 
@@ -229,30 +228,35 @@ Nếu Cloud trả lỗi, kiểm tra mạng, key, quyền truy cập model và gi
 Mở PowerShell tại thư mục đã giải nén và chạy:
 
 ```powershell
-.\setup_nhanh.bat --local
+.\setup_ollama.bat
 ```
 
-Lựa chọn này dùng Ollama đã cài hoặc cài Ollama cho tài khoản hiện tại qua WinGet, rồi tải `qwen2.5-coder:1.5b` nếu máy chưa có. Bước cài đầu cần mạng. Model khoảng 986 MB và Ollama cần thêm dung lượng cho ứng dụng. Sau khi tải xong, mở Ollama, reload IDE rồi bấm **Alt+5**. [Cài Ollama trên Windows](https://docs.ollama.com/windows) · [Dung lượng model mặc định](https://ollama.com/library/qwen2.5-coder:1.5b)
+`setup_ollama.bat` có thể chạy riêng. Nó dùng ứng dụng Ollama sẵn có hoặc cài Ollama cho tài khoản hiện tại qua WinGet, rồi tải `qwen2.5-coder:1.5b` nếu cần. Lần tải đầu cần mạng. Model khoảng 986 MB và Ollama cần thêm dung lượng cho ứng dụng. Sau khi tải xong, mở Ollama, tải lại cửa sổ IDE rồi bấm **Alt+5**. [Cài Ollama trên Windows](https://docs.ollama.com/windows) · [Dung lượng model mặc định](https://ollama.com/library/qwen2.5-coder:1.5b)
 
-Có thể chọn model khác đã tải được trên máy bằng `.\setup_nhanh.bat --local --local-model TÊN_MODEL`. Nếu thiếu WinGet, cài Ollama từ trang chính thức rồi chạy lại lệnh. Nếu Ollama chưa chạy, mở ứng dụng trước khi bấm **Alt+5**. Công cụ ưu tiên bộ giải có đặc tả trước khi hỏi model. Bản nháp từ model cục bộ được kiểm tra cú pháp và cần đối chiếu với đề.
+Có thể chọn model khác bằng `.\setup_ollama.bat --local-model TÊN_MODEL`. Nếu thiếu WinGet, cài Ollama từ trang chính thức rồi chạy lại lệnh. **Alt+5** gửi đề tới model chạy trên máy tại `127.0.0.1:11434`, kể cả khi bài có bộ giải offline. Tiện ích kiểm tra cú pháp của mã trả về.
 
-Luồng cục bộ chỉ gửi nội dung tới Ollama ở `127.0.0.1:11434`. Khi ứng dụng đang chạy, có thể dùng `ollama list` để xem model đã tải. Dùng `.\setup_nhanh.bat --check --local` để kiểm tra điều kiện cài. Nếu bước tải model lỗi, phần Offline vẫn dùng được và bạn có thể chạy lại lệnh `--local` sau.
+Dùng `.\setup_ollama.bat --check` để kiểm tra model. Chạy lại `.\setup_ollama.bat` nếu tải model bị gián đoạn.
 
 ## Cập nhật, gỡ và xử lý lỗi
 
 Cập nhật bằng cách chạy lại setup từ bản mới rồi chọn **Reload Window**. Nếu dùng Git, chạy `git pull --ff-only` trước khi chạy setup. Nếu dùng profile đầy đủ, thêm `--profile full` khi nâng cấp. Nếu đã cài ở hai IDE, cập nhật cho từng IDE.
 
-Gỡ bằng **Alt+0** hoặc chạy **go_cai_dat.bat**. Nếu cài VSIX thủ công, gỡ thêm extension trong **Extensions**, rồi tải lại các cửa sổ IDE. Ollama và model do ứng dụng Ollama quản lý riêng. [go_cai_dat.bat](go_cai_dat.bat)
+| Thành phần | Cài đặt | Gỡ trong terminal | Gỡ khi nhấp đúp |
+| --- | --- | --- | --- |
+| Offline + API | [setup_nhanh.bat](setup_nhanh.bat) | [go_cai_dat.bat](go_cai_dat.bat) | [go_cai_dat.vbs](go_cai_dat.vbs) |
+| Ollama | [setup_ollama.bat](setup_ollama.bat) | [go_ollama.bat](go_ollama.bat) | [go_ollama.vbs](go_ollama.vbs) |
+
+Các file gỡ ghi nhật ký trong `%LOCALAPPDATA%\PylanceHelperLogs`. File `.vbs` chạy lệnh gỡ ở nền khi nhấp đúp. Trình gỡ Ollama giữ lại ứng dụng và model đã có trước khi chạy bộ cài này. **Alt+0** gỡ Offline + API sau khi xác nhận. Nếu chỉ cài VSIX thủ công, tải lại IDE sau khi tự gỡ tiện ích cuối cùng trong **Extensions**.
 
 | Hiện tượng | Cách xử lý |
 | --- | --- |
 | `python` không được nhận diện | Kiểm tra `py -3 --version` hoặc `python --version`. Nếu chưa có Python phù hợp, cài Python 3.10 trở lên và mở lại terminal. |
 | Trình cài không thấy IDE | Chạy `.\setup_nhanh.bat --check`. Nếu IDE thiếu CLI, cài theo chế độ `--ide manual`. |
 | Phím tắt không phản hồi | Mở file `.py`, tải lại cửa sổ và thử lệnh qua **Ctrl+Shift+P**. Kiểm tra **Keyboard Shortcuts** nếu phím bị trùng. |
-| `SyntaxError` xuất hiện ở dòng đề bài | Đặt đề sau dấu `#`. Dùng phím của công cụ để tạo bản xem trước trước khi chạy file Python. |
+| `SyntaxError` xuất hiện ở dòng đề bài | Đặt đề trong dấu ba nháy hoặc sau dấu `#`. Dùng phím của công cụ để tạo đề xuất. |
 | `ModuleNotFoundError: No module named 'simpleai'` | Lưu file và chọn **Chạy file đã lưu bằng Python của công cụ**. Với `kanren` hoặc `sympy`, dùng gói đầy đủ và profile `full`. |
 | Offline báo thiếu dữ liệu hoặc ngoài phạm vi | Đối chiếu kiểu `@solve`, dữ liệu và ràng buộc hoặc thử **Alt+5** hay **Alt+3** cho câu hỏi tự do. |
 | API báo `401`, `403` hoặc `429` | Kiểm tra key, quyền truy cập model hoặc hạn mức của hãng. Dùng lệnh **Quên API key phiên này** để nhập key mới. |
-| Ollama không kết nối được hoặc thiếu model | Mở Ollama, kiểm tra `ollama list`, sau đó chạy lại `.\setup_nhanh.bat --local` nếu cần tải model. |
+| Ollama không kết nối được hoặc thiếu model | Mở Ollama, kiểm tra `.\setup_ollama.bat --check` hoặc chạy lại bộ cài để tải model. |
 
 Xem [mã bộ xử lý](core_engine), [extension](shells/vscode_ext) và [kiểm thử](tests).

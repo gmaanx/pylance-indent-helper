@@ -66,10 +66,13 @@ class ConfigManager:
         self._data = dict(DEFAULT_CONFIG)
         local_app = os.environ.get("LOCALAPPDATA")
         if local_app:
-            install_dir = Path(local_app) / "Programs" / "PylanceHelper"
+            local_root = Path(local_app)
+            install_dir = local_root / "Programs" / "PylanceHelper"
             self._load_models(install_dir / "models.json")
             runtime = self._read_object(install_dir / "runtime.json")
             self._set_model("local_model", runtime.get("localModel"))
+            local_runtime = self._read_object(local_root / "PylanceHelperLocalAI" / "runtime.json")
+            self._set_model("local_model", local_runtime.get("localModel"))
 
     @staticmethod
     def _read_object(config_file: Path) -> dict[str, Any]:

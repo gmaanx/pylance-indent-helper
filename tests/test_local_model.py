@@ -24,6 +24,43 @@ class LocalModelTests(unittest.TestCase):
         post.assert_not_called()
         self.assertTrue(exact["verified_ok"])
 
+    def test_alt_five_sends_recognized_exercises_to_ollama(self):
+        for prompt in ('# Liệt kê 3 số nguyên tố đầu tiên.', '# @solve {"type":"vector24"}'):
+            with (
+                self.subTest(prompt=prompt),
+                patch("core_engine.engine_pipeline.solve_offline") as offline,
+                patch("core_engine.engine_pipeline.call_tier1_cloud_llm") as cloud,
+                patch.object(brain_router, "_post_json", side_effect=[
+                    {}, {"done": True, "response": "def result():\n    return 3"},
+                ]) as post,
+            ):
+                result = decode_request(json.dumps({
+                    "text": prompt, "mode": "local", "allow_local": True, "allow_cloud": True,
+                }), allow_network=True)
+                offline.assert_not_called()
+                cloud.assert_not_called()
+                self.assertEqual(post.call_count, 2)
+                self.assertIn(prompt, post.call_args.args[2]["prompt"])
+                self.assertEqual(result["tier_used"], "tier2_ollama")
+                self.assertEqual(result["validation_status"], "syntax_checked")
+                self.assertTrue(result["code"].startswith("# [Alt+5 · Ollama |"))
+
+    def test_alt_five_surfaces_ollama_errors_without_an_offline_result(self):
+        error = HTTPError("http://127.0.0.1:11434/api/show", 404, "not found", {}, None)
+        with patch.object(brain_router, "_post_json", side_effect=error) as post:
+            result = self.request(text='# @solve {"type":"vector24"}', mode="local", allow_local=True)
+        post.assert_called_once()
+        self.assertFalse(result["code"])
+        self.assertIn("Ollama chưa có model", " ".join(result["diagnostics"]))
+
+    def test_alt_five_still_requires_local_authorization(self):
+        with patch.object(brain_router, "_post_json") as post:
+            result = decode_request(json.dumps({
+                "text": '# @solve {"type":"vector24"}', "mode": "local", "allow_local": True,
+            }))
+        post.assert_not_called()
+        self.assertFalse(result["code"])
+
     def test_local_metadata_probe_precedes_prompt_and_keeps_model(self):
         with (
             patch.object(brain_router.CONFIG, "get", side_effect=lambda field, fallback=None: "fixture:1b" if field == "local_model" else fallback),
@@ -49,7 +86,7 @@ class LocalModelTests(unittest.TestCase):
         with patch.object(brain_router, "_post_json", side_effect=error) as post:
             response = self.request(allow_local=True)
         post.assert_called_once()
-        self.assertIn("--local", " ".join(response["diagnostics"]))
+        self.assertIn("setup_ollama.bat", " ".join(response["diagnostics"]))
 
     def test_truncated_generation_cannot_open_a_preview(self):
         with patch.object(brain_router, "_post_json", side_effect=[
@@ -67,8 +104,14 @@ class LocalModelTests(unittest.TestCase):
             (install / "models.json").write_text('{"local_model":"old:1b","groq_model":"custom"}', encoding="utf-8")
             with patch.dict("os.environ", {"LOCALAPPDATA": directory}):
                 config = ConfigManager()
+                local = Path(directory) / "PylanceHelperLocalAI"
+                local.mkdir()
+                (local / "runtime.json").write_text('{"localModel":"separate:1b"}', encoding="utf-8")
+                separate = ConfigManager()
         self.assertEqual(config.get("local_model"), "configured:1b")
         self.assertEqual(config.get("groq_model"), "custom")
+        self.assertEqual(separate.get("local_model"), "separate:1b")
+        self.assertEqual(separate.get("groq_model"), "custom")
 
 
 if __name__ == "__main__":

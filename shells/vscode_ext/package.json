@@ -1,8 +1,8 @@
 {
   "name": "pylance-indent-helper",
   "displayName": "Trợ lý bài tập Python",
-  "description": "Giải bài tập Python được hỗ trợ offline và xem trước đề xuất sửa code.",
-  "version": "1.6.1",
+  "description": "Giải bài tập Python và chèn kết quả vào file đang soạn.",
+  "version": "1.6.4",
   "publisher": "ms-python-tools",
   "engines": {
     "vscode": "^1.75.0"
@@ -33,12 +33,12 @@
       },
       {
         "command": "pylanceIndentHelper.silentFix",
-        "title": "Kiểm tra và đề xuất sửa Python offline",
+        "title": "Kiểm tra và sửa Python offline",
         "category": "Bài tập Python"
       },
       {
         "command": "pylanceIndentHelper.localAi",
-        "title": "Phân tích với AI cục bộ",
+        "title": "Phân tích với Ollama",
         "category": "Bài tập Python"
       },
       {
@@ -53,7 +53,7 @@
       },
       {
         "command": "pylanceIndentHelper.uninstallAll",
-        "title": "Gỡ cài đặt",
+        "title": "Gỡ phần cơ bản",
         "category": "Bài tập Python"
       },
       {

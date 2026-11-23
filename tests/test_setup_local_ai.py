@@ -95,13 +95,17 @@ class OllamaPreparationTests(unittest.TestCase):
 
 class OptionalInstallerTests(unittest.TestCase):
     def test_check_preflights_local_without_installing(self):
-        args = argparse.Namespace(ide="manual", ide_cli=None, profile="simpleai", check=True, local=True, local_model=None)
+        args = argparse.Namespace(
+            ide="manual", ide_cli=None, profile="simpleai", check=True,
+            local=False, local_shell=True, local_model=None,
+        )
         with patch.object(argparse.ArgumentParser, "parse_args", return_value=args), \
-                patch.object(setup, "check_install", return_value=(None, Path(sys.executable))), \
-                patch.object(setup, "check_local_ai", return_value="Ollama ready") as check, \
+                patch.object(setup, "check_install", return_value=(None, Path(sys.executable))) as preflight, \
+                patch.object(setup, "check_managed_local_ai", return_value="Ollama ready") as check, \
                 patch.object(setup, "install_all") as install:
             self.assertEqual(setup.main(), 0)
-        check.assert_called_once_with(local_ai.DEFAULT_MODEL)
+        preflight.assert_called_once_with("manual", None, "local")
+        check.assert_called_once_with(None)
         install.assert_not_called()
 
     def test_base_install_and_previous_model_survive_failed_optional_setup(self):
@@ -115,28 +119,60 @@ class OptionalInstallerTests(unittest.TestCase):
                     patch.object(setup, "prepare_engine", return_value=Path(sys.executable)), \
                     patch.object(setup, "smoke_test"), \
                     patch.object(setup, "build_vsix", side_effect=lambda path: path), \
-                    patch.object(setup, "prepare_local_ai", side_effect=RuntimeError("download denied")):
-                with self.assertRaisesRegex(RuntimeError, "Da cai ban co ban.*download denied"):
+                    patch.object(setup, "migrate_legacy_local_ai") as migrate, \
+                    patch.object(setup, "install_local_ai", side_effect=RuntimeError("download denied")):
+                with self.assertRaisesRegex(RuntimeError, "Da cai tich hop IDE.*download denied"):
                     setup.install_all(None, Path(sys.executable), local_model=local_ai.DEFAULT_MODEL)
             config = json.loads(runtime_json.read_text(encoding="utf-8"))
+            migrate.assert_called_once_with({"localModel": prior_model, "localOllamaExecutable": "old"})
             self.assertTrue(Path(config["engineRoot"]).is_dir())
-            self.assertEqual(config["localModel"], prior_model)
-            self.assertEqual(config["localOllamaExecutable"], "old")
+            self.assertTrue(config["baseEnabled"])
+            self.assertNotIn("localModel", config)
 
-    def test_successful_optional_setup_persists_selected_model(self):
+    def test_local_shell_uses_bootstrap_python_without_offline_wheels(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name) / "helper"
             model = "custom:1b"
             with patch.object(setup, "install_root", return_value=root), \
-                    patch.object(setup, "prepare_engine", return_value=Path(sys.executable)), \
                     patch.object(setup, "smoke_test"), \
                     patch.object(setup, "build_vsix", side_effect=lambda path: path), \
-                    patch.object(setup, "prepare_local_ai", return_value={"localModel": model}) as prepare:
-                setup.install_all(None, Path(sys.executable), local_model=model)
+                    patch.object(setup, "migrate_legacy_local_ai"), \
+                    patch.object(setup, "run_python") as run, \
+                    patch.object(setup, "install_local_ai", return_value={"localModel": model}) as prepare:
+                setup.install_all(None, Path(sys.executable), "local", local_model=model)
             prepare.assert_called_once_with(model)
+            run.assert_not_called()
             config = json.loads((root / "runtime.json").read_text(encoding="utf-8"))
-            self.assertEqual(config["localModel"], model)
+            self.assertEqual(config["python"], sys.executable)
+            self.assertFalse(config["baseEnabled"])
             self.assertFalse((Path(config["engineRoot"]) / "runtime.json").exists())
+
+    def test_local_setup_reuses_existing_full_python(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name) / "helper"
+            old_runtime = root / "runtime-existing"
+            old_venv = old_runtime / ".venv"
+            old_venv.mkdir(parents=True)
+            (old_venv / "pyvenv.cfg").touch()
+            executable = old_venv / "python.exe"
+            executable.touch()
+            (root / "runtime.json").write_text(json.dumps({
+                "engineRoot": str(old_runtime), "python": str(executable),
+                "baseEnabled": True, "dependencyProfile": "full",
+            }), encoding="utf-8")
+            with patch.object(setup, "install_root", return_value=root), \
+                    patch.object(setup, "smoke_test"), \
+                    patch.object(setup, "build_vsix", side_effect=lambda path: path), \
+                    patch.object(setup, "migrate_legacy_local_ai"), \
+                    patch.object(setup, "prepare_engine") as prepare, \
+                    patch.object(setup, "install_local_ai", return_value={"localModel": "fixture:1b"}):
+                setup.install_all(None, Path(sys.executable), "local", wants_local=True)
+            config = json.loads((root / "runtime.json").read_text(encoding="utf-8"))
+            self.assertTrue(config["baseEnabled"])
+            self.assertEqual(config["dependencyProfile"], "full")
+            self.assertEqual(config["python"], str(executable))
+            self.assertTrue(executable.exists())
+            prepare.assert_not_called()
 
 
 if __name__ == "__main__":

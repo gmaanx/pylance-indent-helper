@@ -71,7 +71,9 @@ def process_request(
                 "syntax_checked": "Đã kiểm tra cú pháp",
                 "reference": "Mẫu tham khảo",
             }
-            if tier.startswith("tier1_"):
+            if action_mode == "local":
+                action_label = "Alt+5 · Ollama"
+            elif tier.startswith("tier1_"):
                 action_label = "Cloud"
             elif tier.startswith("tier2_"):
                 action_label = "AI cục bộ"
@@ -89,6 +91,16 @@ def process_request(
             diagnostics=tuple(diagnostics) + tuple(notes),
         )
 
+    def finish_model(candidate):
+        code, tier = candidate
+        error = _syntax_error(code)
+        if error:
+            return finish("invalid", tier, error=error)
+        return finish(
+            "syntax_checked", tier, code,
+            notes=("Mã đề xuất đã qua kiểm tra cú pháp. Hãy đối chiếu với dữ liệu và ràng buộc.",),
+        )
+
     if not raw_text.strip():
         return finish("needs_input", "empty", error="Nhập yêu cầu hoặc mã Python để bắt đầu.")
     if len(raw_text) > 100_000:
@@ -97,6 +109,16 @@ def process_request(
     parsed = parse_user_input(raw_text, force_mode="self_fix" if action_mode == "self_fix" else None)
     if parsed.mode == "cfg":
         return finish("unsupported", "config", error="Nhập cấu hình và API key trong công cụ, tránh đặt trong mã nguồn.")
+
+    if action_mode == "local":
+        if not allow_local:
+            return finish("unsupported", "tier2_ollama", error="Yêu cầu chưa bật Ollama cục bộ.")
+        candidate = call_tier2_local_llm(raw_text, None, diagnostics=diagnostics)
+        if candidate is None:
+            error = diagnostics[-1] if diagnostics else "Ollama chưa tạo được đề xuất."
+            return finish("unsupported", "tier2_ollama", error=error)
+        return finish_model(candidate)
+
     if parsed.mode in ("structured", "dsl") and parsed.existing_code:
         return finish(
             "invalid", "offline_solver",
@@ -145,14 +167,7 @@ def process_request(
                 raw_text, None, diagnostics=diagnostics,
             )
         if candidate is not None:
-            code, tier = candidate
-            error = _syntax_error(code)
-            if error:
-                return finish("invalid", tier, error=error)
-            return finish(
-                "syntax_checked", tier, code,
-                notes=("Mã đề xuất đã qua kiểm tra cú pháp. Hãy đối chiếu với dữ liệu và ràng buộc.",),
-            )
+            return finish_model(candidate)
 
     if offline_error is not None:
         return finish(offline_error.status, "offline_solver", error=str(offline_error), notes=(_SUGGEST_MODEL,))

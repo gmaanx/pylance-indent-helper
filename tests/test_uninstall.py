@@ -52,11 +52,52 @@ class UninstallTests(unittest.TestCase):
             mock.start()
             self.addCleanup(mock.stop)
 
-    def run_uninstall(self):
+    def run_uninstall(self, **kwargs):
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-            result = uninstall.uninstall_everything()
+            result = uninstall.uninstall_everything(**kwargs)
         return result, output.getvalue()
+
+    def test_base_and_local_shell_can_be_removed_independently(self):
+        runtime = self.install / "runtime-base"
+        engine = runtime / "core_engine"
+        engine.mkdir(parents=True)
+        (engine / "cli_entry.py").touch()
+        (runtime / "go_cai_dat.py").touch()
+        venv_python = runtime / ".venv" / "python.exe"
+        venv_python.parent.mkdir()
+        venv_python.touch()
+        cli = self.root / "code.cmd"
+        config_file = self.install / "runtime.json"
+        config_file.write_text(json.dumps({
+            "engineRoot": str(runtime), "python": str(venv_python),
+            "uninstallPython": sys.executable, "baseEnabled": True,
+            "dependencyProfile": "simpleai",
+            "ides": [{"cli": str(cli), "extension": uninstall.EXT_ID}],
+        }), encoding="utf-8")
+        local = self.install.parent.parent / "PylanceHelperLocalAI" / "runtime.json"
+        local.parent.mkdir()
+        local.write_text('{"localModel": "fixture:1b"}', encoding="utf-8")
+        with patch.object(uninstall, "run_ide_cli") as command, \
+                patch.object(uninstall, "list_extensions", side_effect=[{uninstall.EXT_ID}, set()]):
+            self.assertTrue(self.run_uninstall(local_shell_only=True)[0])
+            self.assertTrue(venv_python.exists())
+            result, output = self.run_uninstall()
+            self.assertTrue(result, output)
+            config = json.loads(config_file.read_text(encoding="utf-8"))
+            self.assertFalse(config["baseEnabled"])
+            self.assertEqual(config["dependencyProfile"], "local")
+            self.assertEqual(config["python"], sys.executable)
+            self.assertTrue((Path(config["engineRoot"]) / "core_engine" / "cli_entry.py").is_file())
+            self.assertFalse(runtime.exists())
+            self.assertTrue(local.exists())
+            self.assertTrue(self.run_uninstall(local_shell_only=True)[0])
+            command.assert_not_called()
+            local.unlink()
+            result, output = self.run_uninstall(local_shell_only=True)
+            self.assertTrue(result, output)
+            command.assert_called_once_with(cli, "--uninstall-extension", uninstall.EXT_ID)
+        self.assertFalse(self.install.exists())
 
     def test_removes_all_versions_and_preserves_unrelated_files(self):
         result, output = self.run_uninstall()
