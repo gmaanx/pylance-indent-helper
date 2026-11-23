@@ -13,6 +13,7 @@ from .cloud_review import review_cloud_draft, syntax_error as _syntax_error
 from .dual_parser import parse_user_input
 from .golden_skeletons import ALL_SKELETONS, customize_skeleton_with_prompt
 from .offline_solver import OfflineProblemError, solve_offline
+from .runnable_output import ensure_runnable_print
 from .shadow_runner_healer import static_auto_heal_preserve_style
 
 
@@ -91,15 +92,21 @@ def process_request(
             diagnostics=tuple(diagnostics) + tuple(notes),
         )
 
-    def finish_model(candidate):
+    def finish_model(candidate, *, editing_existing=False):
         code, tier = candidate
         error = _syntax_error(code)
         if error:
             return finish("invalid", tier, error=error)
-        return finish(
-            "syntax_checked", tier, code,
-            notes=("Mã đề xuất đã qua kiểm tra cú pháp. Hãy đối chiếu với dữ liệu và ràng buộc.",),
+        notes = ["Mã đề xuất đã qua kiểm tra cú pháp. Hãy đối chiếu với dữ liệu và ràng buộc."]
+        enhanced, has_output = ensure_runnable_print(
+            code, raw_text, editing_existing=editing_existing,
         )
+        if enhanced != code and not _syntax_error(enhanced):
+            code = enhanced
+            notes.append('Đã tự bổ sung khối if __name__ == "__main__" để in kết quả khi chạy.')
+        elif not has_output:
+            notes.append("Mã đề xuất chưa có lệnh print khi chạy trực tiếp; hãy bổ sung lời gọi hàm nếu cần.")
+        return finish("syntax_checked", tier, code, notes=tuple(notes))
 
     if not raw_text.strip():
         return finish("needs_input", "empty", error="Nhập yêu cầu hoặc mã Python để bắt đầu.")
@@ -117,7 +124,7 @@ def process_request(
         if candidate is None:
             error = diagnostics[-1] if diagnostics else "Ollama chưa tạo được đề xuất."
             return finish("unsupported", "tier2_ollama", error=error)
-        return finish_model(candidate)
+        return finish_model(candidate, editing_existing=bool(parsed.existing_code))
 
     if parsed.mode in ("structured", "dsl") and parsed.existing_code:
         return finish(
@@ -167,7 +174,7 @@ def process_request(
                 raw_text, None, diagnostics=diagnostics,
             )
         if candidate is not None:
-            return finish_model(candidate)
+            return finish_model(candidate, editing_existing=bool(parsed.existing_code))
 
     if offline_error is not None:
         return finish(offline_error.status, "offline_solver", error=str(offline_error), notes=(_SUGGEST_MODEL,))

@@ -1,7 +1,9 @@
 """The pasted class exercises must never yield unrelated example code."""
 
+import io
 import math
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from core_engine.engine_pipeline import process_request
@@ -68,6 +70,19 @@ class GeometryClassTests(unittest.TestCase):
             r"\left\|\vec{u}\right\|\left\|\vec{v}\right\|}$.",
         )
         self.generated_class(vector_prompt, "Vector24")
+
+    def test_class_solutions_print_examples_only_when_run_directly(self):
+        for prompt, expected in ((DIEM_PROMPT, ["13.0"]), (VECTOR_PROMPT, ["11"])):
+            with self.subTest(prompt=prompt):
+                response = process_request(prompt, "instant")
+                script = compile(response.code, "<geometry-example>", "exec")
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    exec(script, {"__name__": "exercise"})
+                self.assertEqual(output.getvalue(), "")
+                with redirect_stdout(output):
+                    exec(script, {"__name__": "__main__"})
+                self.assertLessEqual(set(expected), set(output.getvalue().splitlines()))
 
     def test_geometry_variants_cannot_silently_drop_extra_constraints(self):
         examples = (

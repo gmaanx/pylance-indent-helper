@@ -1,6 +1,6 @@
 # Phạm vi offline theo môn học
 
-Mỗi dòng `# @solve` dưới đây là một bài độc lập. Bôi đen một dòng rồi bấm **Alt+1**. Tool trả mã Python chạy độc lập và giải thích phạm vi của kết quả. Các ví dụ dùng dữ liệu tự tạo.
+Mỗi dòng `# @solve` dưới đây là một bài độc lập. Bôi đen một dòng rồi bấm **Alt+1**. Tool trả mã Python chạy độc lập (có khối `if __name__ == "__main__":` tự in kết quả khi chạy) và giải thích phạm vi của kết quả. Có thể thêm trường `"output"` (ví dụ `{"format":"json"}`, `{"format":"lines"}`, `{"format":"join","sep":" -> "}`, `{"format":"fixed","decimals":2}`, `{"format":"template","template":"KQ: {result}"}`) để định dạng đầu ra theo yêu cầu đề. Các ví dụ dùng dữ liệu tự tạo.
 
 | Nguồn đã đối chiếu | Nhóm bài trong tool |
 | --- | --- |

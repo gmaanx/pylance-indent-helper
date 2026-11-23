@@ -120,11 +120,20 @@ def _geometry_class_prompt(text):
         r"\s*bao loi phu hop\s*\(typeerror hoac valueerror\)\.[\s-]*"
         r"khoang_cach_goc\(self\)\s*:\s*tinh khoang cach euclid tu diem toi goc toa do"
         r"\s*\$?\(0,\s*0,\s*0\)\$?"
-        r"(?:,\s*cong thuc:\s*\$+d\s*=\s*\\sqrt\{x\^2\s*\+\s*y\^2\s*\+\s*z\^2\}\$+)?[.\s]*",
+        r"(?:,\s*cong thuc:\s*\$+d\s*=\s*\\sqrt\{x\^2\s*\+\s*y\^2\s*\+\s*z\^2\}\$+)?"
+        r"(?:[.\s,;]+(?:va\s+)?(?:hay\s+)?(?:in(?:\s+ra)?(?:\s+ket qua)?|thu|vi du|kiem thu)(?:\s+voi)?\s+diem"
+        r"\s*\(\s*(?P<sx>[+-]?\d+(?:\.\d+)?)\s*,\s*(?P<sy>[+-]?\d+(?:\.\d+)?)\s*,\s*(?P<sz>[+-]?\d+(?:\.\d+)?)\s*\))?"
+        r"[.\s]*",
         normalized,
     )
     if point:
-        return {"type": "diem3d"}
+        result = {"type": "diem3d"}
+        if point["sx"] is not None:
+            result["sample"] = [
+                float(v) if "." in v else int(v)
+                for v in (point["sx"], point["sy"], point["sz"])
+            ]
+        return result
 
     return None
 

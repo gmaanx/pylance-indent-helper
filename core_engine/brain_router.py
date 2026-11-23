@@ -40,6 +40,17 @@ def extract_python_code(raw_response: str) -> str:
     return re.sub(r"```\s*$", "", text).strip()
 
 
+_RUNNABLE_OUTPUT_GUIDANCE = (
+    'Khi viết lời giải mới, luôn tạo chương trình có thể chạy trực tiếp và tự print kết quả khi chạy. '
+    'Nếu đề có yêu cầu cách in hoặc định dạng đầu ra (kể cả đọc stdin/in stdout, làm tròn, JSON, từng dòng, tiêu đề...), '
+    'hãy đọc đúng đầu vào và chỉ in kết quả theo đúng định dạng yêu cầu của đề. '
+    'Nếu đề không quy định cách in (ví dụ chỉ yêu cầu định nghĩa hàm, lớp hoặc thuật toán), '
+    'giữ nguyên API theo đề và thêm khối if __name__ == "__main__": gọi hàm hoặc tạo đối tượng '
+    'với dữ liệu mẫu trong đề (hoặc dữ liệu minh họa nhỏ hợp lệ) rồi print kết quả rõ ràng. '
+    'Tôn trọng mọi yêu cầu bỏ ví dụ hoặc giữ nguyên đầu ra khi sửa mã có sẵn.'
+)
+
+
 def build_context_injected_prompt(
     user_prompt: str,
     top_skeletons: List[Dict[str, Any]],
@@ -54,6 +65,8 @@ def build_context_injected_prompt(
         "Dùng thư viện chuẩn khi đề yêu cầu Python thuần hoặc không cần thư viện ngoài. "
         "Giữ đúng tên lớp, tên hàm, số chiều và chữ ký phương thức mà đề đã nêu. "
         "Áp dụng hướng dẫn SimpleAI và miniKanren dưới đây nếu dùng các thư viện đó.\n\n"
+        + _RUNNABLE_OUTPUT_GUIDANCE
+        + "\n\n"
         + SIMPLEAI_STRICT_RULES
     )
     if top_skeletons:

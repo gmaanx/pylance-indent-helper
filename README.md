@@ -38,7 +38,7 @@ Khi file cần SimpleAI mà Python đang chọn báo `ModuleNotFoundError`, lưu
 
 1. Mở file `.py`, đặt đề trong dấu ba nháy `"""` rồi đặt con trỏ trong khối đề. Dùng cách này cho **Alt+1** đến **Alt+5**. Có thể bôi đen một đề để chỉ định vùng cần xử lý.
 2. Bấm **Alt+1** để chèn kết quả vào file đang mở. Ví dụ dưới đây tìm ba số nguyên tố đầu tiên. Dùng **Ctrl+Z** để hoàn tác. Nếu file hoặc vùng chọn thay đổi trong lúc xử lý, chạy lại lệnh trên nội dung mới.
-3. Lưu bằng **Ctrl+S**. Nếu mã có đoạn chạy thử, chọn **Bài tập Python: Chạy file đã lưu bằng Python của công cụ** trong **Ctrl+Shift+P** để xem kết quả ở Terminal. Nếu mã chỉ định nghĩa lớp hoặc hàm, cần gọi lớp hoặc hàm để thấy kết quả.
+3. Lưu bằng **Ctrl+S**, rồi chọn **Bài tập Python: Chạy file đã lưu bằng Python của công cụ** trong **Ctrl+Shift+P** để xem kết quả ở Terminal. Cả 3 chế độ (**Offline**, **API Cloud – Alt+3**, và **Ollama – Alt+5**) đều tự sinh đoạn chạy trực tiếp trong `if __name__ == "__main__":` để in kết quả khi chạy: nếu đề quy định cách in hoặc định dạng đầu ra thì in theo đúng yêu cầu của đề, còn nếu không quy định thì tự gọi và in kết quả (dùng dữ liệu mẫu của đề hoặc dữ liệu minh họa nhỏ với bài chỉ khai báo lớp/hàm).
 
 ```python
 """
@@ -174,7 +174,7 @@ Knapsack 0/1 có thể yêu cầu chọn đúng số món và giữ món bắt b
 # @solve {"type":"mdp","states":{"S":{"stay":[{"to":"S","p":1,"reward":1}],"close":[{"to":"T","p":1,"reward":5}]},"T":{}},"discount":0.9,"horizon":3}
 ```
 
-Mỗi dòng `@solve` là một ví dụ độc lập. Bôi đen một dòng trước khi bấm `Alt+1`. Bộ giải cũng nhận một số câu tiếng Việt về đong nước, đổi tiền, 8-puzzle và minimax khi nhận diện được toàn bộ nội dung.
+Mỗi dòng `@solve` là một ví dụ độc lập. Bôi đen một dòng trước khi bấm `Alt+1`. Bộ giải cũng nhận một số câu tiếng Việt về đong nước, đổi tiền, 8-puzzle, minimax, Fibonacci, số nguyên tố, tổng chẵn/lẻ, N hậu và `Diem3D`/`Vector24` khi nhận diện được toàn bộ nội dung. Có thể yêu cầu định dạng in ngay cuối câu tiếng Việt (như `in dạng JSON`, `mỗi số trên một dòng`, `cách nhau bởi dấu phẩy`, `làm tròn 2 chữ số thập phân`, `theo định dạng "Kết quả: {result}"`) hoặc thêm trường `"output"` trong `@solve` (`format`: `json`, `pretty_json`, `lines`, `join`, `fixed`, `template`; tùy chọn `sep`, `decimals`, `prefix`, `suffix`, `field`, `none_text`).
 
 **Đã giải theo đặc tả** nghĩa là bộ giải offline đã tính kết quả theo dữ liệu và quy tắc được hỗ trợ. Bài vượt giới hạn, có dữ liệu thiếu hoặc dùng ràng buộc chưa hỗ trợ sẽ có thông báo riêng. Mẫu tham khảo và đề xuất Cloud cần được đối chiếu với đề. **Đã kiểm tra cú pháp** xác nhận Python đọc được đoạn code.
 

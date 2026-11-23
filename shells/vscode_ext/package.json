@@ -2,7 +2,7 @@
   "name": "pylance-indent-helper",
   "displayName": "Trợ lý bài tập Python",
   "description": "Giải bài tập Python và chèn kết quả vào file đang soạn.",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "publisher": "ms-python-tools",
   "engines": {
     "vscode": "^1.75.0"

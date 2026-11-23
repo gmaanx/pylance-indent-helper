@@ -1,5 +1,6 @@
 """Bounded solvers for explicitly supported search and constraint problems."""
 
+import contextvars
 import inspect
 import json
 import re
@@ -10,7 +11,22 @@ from typing import Optional, Tuple
 
 from .golden_skeletons import strip_accents
 from .offline_input import read_known_format
+from .runnable_output import extract_output_clause, render_main_output, validate_output_spec
 from .sliding_puzzle import _puzzle_neighbors, _puzzle_parity, _solve_sliding_puzzle
+
+_CURRENT_OUTPUT_SPEC: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "_CURRENT_OUTPUT_SPEC", default=None,
+)
+_DEFAULT_COLLECTION_FIELDS = {
+    "_solve_simpleai_graph": "path",
+    "_solve_simpleai_puzzle": "path",
+    "_solve_search_trace": "path",
+    "_grid_path": "path",
+    "_hill_trace": "path",
+    "_prefix_search": "path",
+    "_plan_vacuum": "actions",
+    "_join_relations": "rows",
+}
 
 MAX_STATES = 20_000
 MAX_CSP_STEPS = 50_000
@@ -354,6 +370,45 @@ def _jug_dsl(prompt):
     }
 
 
+def _read_natural_problem(prompt):
+    try:
+        problem = read_known_format(prompt)
+    except (ValueError, RecursionError) as exc:
+        raise OfflineProblemError("invalid", str(exc)) from exc
+    if problem is not None:
+        return problem
+
+    normalized = re.sub(r"\s+", " ", strip_accents(prompt).casefold()).strip()
+    if "dong nuoc" in normalized:
+        match = _JUGS_PATTERN.fullmatch(normalized)
+        if match is None:
+            return None
+        capacities = [int(value) for value in match["capacities"].split(",")]
+        if match["count"] and int(match["count"]) != len(capacities):
+            raise OfflineProblemError("invalid", "Số bình không khớp với danh sách dung tích.")
+        problem = {
+            "type": "water_jugs",
+            "capacities": capacities,
+            "start": [int(value) for value in match["start"].split(",")],
+            "goal": int(match["goal"]),
+            "algorithm": match["algorithm"] or "bfs",
+        }
+        if match["max_pour"]:
+            problem["max_pour"] = int(match["max_pour"])
+        return problem
+    if "doi tien" in normalized:
+        match = _COINS_PATTERN.fullmatch(normalized) or _COINS_SENTENCE_PATTERN.fullmatch(normalized)
+        if match is None:
+            return None
+        return {
+            "type": "coin_change",
+            "amount": int(match["amount"]),
+            "denominations": [int(value) for value in re.findall(r"[0-9]+", match["denominations"])],
+            "algorithm": match["algorithm"] or "bfs",
+        }
+    return None
+
+
 def _read_problem(prompt, target_skeleton_id):
     if re.match(r"^@solve\b", prompt, re.IGNORECASE):
         source = prompt[len("@solve"):].strip()
@@ -381,12 +436,16 @@ def _read_problem(prompt, target_skeleton_id):
     if target_skeleton_id == "search_water_jugs":
         return _jug_dsl(prompt)
 
-    try:
-        problem = read_known_format(prompt)
-    except (ValueError, RecursionError) as exc:
-        raise OfflineProblemError("invalid", str(exc)) from exc
+    problem = _read_natural_problem(prompt)
     if problem is not None:
         return problem
+
+    # Check if the prompt is a recognized offline problem followed by a printing format clause.
+    core_prompt, output_spec = extract_output_clause(prompt)
+    if output_spec is not None and core_prompt != prompt:
+        problem = _read_natural_problem(core_prompt)
+        if problem is not None:
+            return {**problem, "output": output_spec}
 
     normalized = re.sub(r"\s+", " ", strip_accents(prompt).casefold()).strip()
     geometry_names = re.search(r"\blop\s+(vector24|diem3d)\b", normalized)
@@ -398,54 +457,39 @@ def _read_problem(prompt, target_skeleton_id):
             f'Để lấy phiên bản cơ bản, dùng @solve {{"type":"{class_type}"}}.',
         )
     if "dong nuoc" in normalized:
-        match = _JUGS_PATTERN.fullmatch(normalized)
-        if match is None:
-            raise OfflineProblemError(
-                "needs_input",
-                'Cần xác định rõ dung tích, trạng thái đầu, đích và phép rót. '
-                'Dùng @solve với type "water_jugs" để khai báo dữ liệu đầy đủ.',
-            )
-        capacities = [int(value) for value in match["capacities"].split(",")]
-        if match["count"] and int(match["count"]) != len(capacities):
-            raise OfflineProblemError("invalid", "Số bình không khớp với danh sách dung tích.")
-        problem = {
-            "type": "water_jugs",
-            "capacities": capacities,
-            "start": [int(value) for value in match["start"].split(",")],
-            "goal": int(match["goal"]),
-            "algorithm": match["algorithm"] or "bfs",
-        }
-        if match["max_pour"]:
-            problem["max_pour"] = int(match["max_pour"])
-        return problem
+        raise OfflineProblemError(
+            "needs_input",
+            'Cần xác định rõ dung tích, trạng thái đầu, đích và phép rót. '
+            'Dùng @solve với type "water_jugs" để khai báo dữ liệu đầy đủ.',
+        )
     if "doi tien" in normalized:
-        match = _COINS_PATTERN.fullmatch(normalized) or _COINS_SENTENCE_PATTERN.fullmatch(normalized)
-        if match is None:
-            raise OfflineProblemError(
-                "needs_input",
-                'Cần xác định rõ số tiền, mệnh giá và mục tiêu. '
-                'Dùng @solve với type "coin_change" cho bài đổi tiền ít đồng nhất.',
-            )
-        return {
-            "type": "coin_change",
-            "amount": int(match["amount"]),
-            "denominations": [int(value) for value in re.findall(r"[0-9]+", match["denominations"])],
-            "algorithm": match["algorithm"] or "bfs",
-        }
+        raise OfflineProblemError(
+            "needs_input",
+            'Cần xác định rõ số tiền, mệnh giá và mục tiêu. '
+            'Dùng @solve với type "coin_change" cho bài đổi tiền ít đồng nhất.',
+        )
     return None
 
 
 def _standalone(functions, function, arguments, result):
     sources = "\n\n".join(inspect.getsource(fn).rstrip() for fn in functions)
     call = function.__name__ + "(" + ", ".join(repr(arg) for arg in arguments) + ")"
+    output_spec = _CURRENT_OUTPUT_SPEC.get()
+    default_field = _DEFAULT_COLLECTION_FIELDS.get(function.__name__)
+    if function.__name__ == "_solve_primes" and arguments and not arguments[0]:
+        default_field = "first"
+    extra_imports, main_body = render_main_output(
+        call, output_spec, default_collection_field=default_field,
+    )
     expected = repr(result)
-    expected_line = f"# Kết quả dự kiến: {expected}\n" if len(expected) <= 400 else ""
+    expected_line = f"# Kết quả dự kiến: {expected}\n" if not output_spec and len(expected) <= 400 else ""
     return (
+        f"{extra_imports}"
         "from collections import defaultdict, deque\n"
         "from heapq import heappop, heappush\n\n\n"
         f"{sources}\n\n\n"
         'if __name__ == "__main__":\n'
-        f"    print({call})\n"
+        f"{main_body}"
         f"{expected_line}"
     )
 
@@ -688,7 +732,12 @@ def solve_spec(problem: object) -> OfflineSolution:
     }
     if not isinstance(problem_type, str) or problem_type not in solvers:
         raise OfflineProblemError("unsupported", "type cần là một trong các dạng: " + ", ".join(sorted(solvers)) + ".")
+    output_spec = validate_output_spec(problem.get("output")) if "output" in problem else None
+    clean_problem = {k: v for k, v in problem.items() if k != "output"} if "output" in problem else problem
+    token = _CURRENT_OUTPUT_SPEC.set(output_spec)
     try:
-        return solvers[problem_type](problem)
+        return solvers[problem_type](clean_problem)
     except OverflowError as exc:
         raise OfflineProblemError("limit", "Đã chạm giới hạn tìm kiếm. Chưa thể kết luận có nghiệm hay vô nghiệm.") from exc
+    finally:
+        _CURRENT_OUTPUT_SPEC.reset(token)

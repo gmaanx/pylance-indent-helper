@@ -73,7 +73,11 @@ class LocalModelTests(unittest.TestCase):
             "http://127.0.0.1:11434/api/show", "http://127.0.0.1:11434/api/generate",
         ])
         self.assertEqual(post.call_args_list[0].args[2], {"model": "fixture:1b"})
-        self.assertIn("Viết hàm", post.call_args_list[1].args[2]["prompt"])
+        generation = post.call_args_list[1].args[2]
+        self.assertIn("Viết hàm", generation["prompt"])
+        self.assertIn('if __name__ == "__main__":', generation["system"])
+        self.assertIn("print kết quả", generation["system"])
+        self.assertIn("định dạng yêu cầu", generation["system"])
 
     def test_remote_and_missing_models_receive_no_prompt(self):
         with patch.object(brain_router, "_post_json", return_value={"remote_host": "fixture"}) as post:
