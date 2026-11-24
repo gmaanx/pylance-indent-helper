@@ -149,6 +149,49 @@ class LocalAiComponentTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(self.read()["managedModels"], {})
 
+    def test_full_uninstall_removes_preexisting_configured_model_and_user_local_ollama(self):
+        with tempfile.TemporaryDirectory() as app_root:
+            ollama_exe = Path(app_root) / "Programs" / "Ollama" / "ollama.exe"
+            ollama_exe.parent.mkdir(parents=True)
+            ollama_exe.touch()
+            self.write(localModel=self.model, managedModels={}, localOllamaExecutable=str(ollama_exe))
+            with patch.dict("os.environ", {"LOCALAPPDATA": app_root}), \
+                    patch.object(local_ai, "_models", side_effect=[[self.tag()], []]), \
+                    patch.object(local_ai, "find_ollama", return_value=ollama_exe), \
+                    patch.object(local_ai, "_stop_ollama_processes") as stop_proc, \
+                    patch.object(local_ai.shutil, "which", return_value="winget.exe"), \
+                    patch.object(local_ai, "_winget", return_value="winget.exe"), \
+                    patch.object(local_ai, "_run") as run:
+                local_ai.uninstall_local_ai(remove_configured_model=True, remove_user_ollama=True)
+
+        stop_proc.assert_called_once()
+        self.assertEqual(run.call_args_list[0].args[0], [str(ollama_exe), "rm", self.model])
+        self.assertEqual(run.call_args_list[1].args[0][:5], ["winget.exe", "uninstall", "--id", "Ollama.Ollama", "--exact"])
+        self.assertFalse(self.state.parent.exists())
+
+    def test_full_uninstall_falls_back_to_inno_uninstaller_when_winget_fails(self):
+        with tempfile.TemporaryDirectory() as app_root:
+            ollama_dir = Path(app_root) / "Programs" / "Ollama"
+            ollama_dir.mkdir(parents=True)
+            ollama_exe = ollama_dir / "ollama.exe"
+            uninstaller = ollama_dir / "unins000.exe"
+            ollama_exe.touch()
+            uninstaller.touch()
+            self.write(localModel=self.model, managedModels={}, localOllamaExecutable=str(ollama_exe))
+            with patch.dict("os.environ", {"LOCALAPPDATA": app_root}), \
+                    patch.object(local_ai, "_models", side_effect=[[self.tag()], []]), \
+                    patch.object(local_ai, "find_ollama", return_value=ollama_exe), \
+                    patch.object(local_ai, "_stop_ollama_processes") as stop_proc, \
+                    patch.object(local_ai.shutil, "which", return_value="winget.exe"), \
+                    patch.object(local_ai, "_winget", return_value="winget.exe"), \
+                    patch.object(local_ai, "_run", side_effect=[None, RuntimeError("winget failed"), None]) as run:
+                local_ai.uninstall_local_ai(remove_configured_model=True, remove_user_ollama=True)
+
+        stop_proc.assert_called_once()
+        self.assertEqual(run.call_args_list[0].args[0], [str(ollama_exe), "rm", self.model])
+        self.assertEqual(run.call_args_list[2].args[0], [str(uninstaller), "/VERYSILENT", "/NORESTART"])
+        self.assertFalse(self.state.parent.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

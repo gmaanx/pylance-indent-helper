@@ -38,7 +38,7 @@ Khi file cần SimpleAI mà Python đang chọn báo `ModuleNotFoundError`, lưu
 
 1. Mở file `.py`, đặt đề trong dấu ba nháy `"""` rồi đặt con trỏ trong khối đề. Dùng cách này cho **Alt+1** đến **Alt+5**. Có thể bôi đen một đề để chỉ định vùng cần xử lý.
 2. Bấm **Alt+1** để chèn kết quả vào file đang mở. Ví dụ dưới đây tìm ba số nguyên tố đầu tiên. Dùng **Ctrl+Z** để hoàn tác. Nếu file hoặc vùng chọn thay đổi trong lúc xử lý, chạy lại lệnh trên nội dung mới.
-3. Lưu bằng **Ctrl+S**, rồi chọn **Bài tập Python: Chạy file đã lưu bằng Python của công cụ** trong **Ctrl+Shift+P** để xem kết quả ở Terminal. Cả 3 chế độ (**Offline**, **API Cloud – Alt+3**, và **Ollama – Alt+5**) đều tự sinh đoạn chạy trực tiếp trong `if __name__ == "__main__":` để in kết quả khi chạy: nếu đề quy định cách in hoặc định dạng đầu ra thì in theo đúng yêu cầu của đề, còn nếu không quy định thì tự gọi và in kết quả (dùng dữ liệu mẫu của đề hoặc dữ liệu minh họa nhỏ với bài chỉ khai báo lớp/hàm).
+3. Lưu bằng **Ctrl+S**, rồi chọn **Bài tập Python: Chạy file đã lưu bằng Python của công cụ** trong **Ctrl+Shift+P** để xem kết quả ở Terminal. Cả 3 chế độ (**Offline**, **API Cloud – Alt+3**, và **Ollama – Alt+5**) đều tự sinh hàm `main()` / khối `if __name__ == "__main__":` gọi trực tiếp lời giải theo đề bài và in kết quả thực tế khi chạy: nếu đề quy định cách in hoặc định dạng đầu ra thì in theo đúng yêu cầu của đề, còn nếu không quy định thì tự dùng dữ liệu mẫu của đề (hoặc dữ liệu minh họa nhỏ hợp lệ) và in ra luôn (không dùng `input()` trừ khi đề yêu cầu nhập từ bàn phím).
 
 ```python
 """
@@ -55,7 +55,7 @@ Nếu file có nhiều đề, chọn từng khối bằng con trỏ hoặc vùng
 | `Alt+3` | Dùng API Cloud với key nhập trong phiên IDE |
 | `Alt+4` | Kiểm tra và sửa code offline |
 | `Alt+5` | Dùng model Ollama đã tải trên máy |
-| `Alt+0` | Mở xác nhận gỡ công cụ |
+| `Alt+0` | Mở xác nhận gỡ toàn bộ công cụ (Alt+1–5, Extension IDE & Ollama) |
 
 Có thể tìm các lệnh trong **Ctrl+Shift+P**. Lệnh hủy hiện ở thông báo tiến độ khi đang xử lý. Bản cài dành cho IDE và các phím tạo code hoạt động khi đang soạn Python.
 
@@ -246,7 +246,7 @@ Cập nhật bằng cách chạy lại setup từ bản mới rồi chọn **Rel
 | Offline + API | [setup_nhanh.bat](setup_nhanh.bat) | [go_cai_dat.bat](go_cai_dat.bat) | [go_cai_dat.vbs](go_cai_dat.vbs) |
 | Ollama | [setup_ollama.bat](setup_ollama.bat) | [go_ollama.bat](go_ollama.bat) | [go_ollama.vbs](go_ollama.vbs) |
 
-Các file gỡ ghi nhật ký trong `%LOCALAPPDATA%\PylanceHelperLogs`. File `.vbs` chạy lệnh gỡ ở nền khi nhấp đúp. Trình gỡ Ollama giữ lại ứng dụng và model đã có trước khi chạy bộ cài này. **Alt+0** gỡ Offline + API sau khi xác nhận. Nếu chỉ cài VSIX thủ công, tải lại IDE sau khi tự gỡ tiện ích cuối cùng trong **Extensions**.
+Các file gỡ ghi nhật ký trong `%LOCALAPPDATA%\PylanceHelperLogs`. File `.vbs` chạy lệnh gỡ ở nền khi nhấp đúp. **Alt+0** (và `go_cai_dat.bat`) mặc định gỡ toàn bộ công cụ từ **Alt+1 đến Alt+5**, gồm Extension IDE, môi trường Python, cấu hình `PylanceHelperLocalAI`, nhật ký và model/ứng dụng Ollama đã cài cho người dùng (có tùy chọn **Chỉ gỡ Alt+1–4** nếu muốn giữ lại Ollama). `go_ollama.bat` dùng khi chỉ muốn gỡ riêng thành phần Ollama. Nếu chỉ cài VSIX thủ công, tải lại IDE sau khi tự gỡ tiện ích cuối cùng trong **Extensions**.
 
 | Hiện tượng | Cách xử lý |
 | --- | --- |

@@ -83,6 +83,11 @@ def copy_runtime_files(source: Path, target: Path) -> None:
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pylance_cache.json"),
     )
     shutil.copy2(source / "go_cai_dat.py", target / "go_cai_dat.py")
+    local_ai_src = source / "setup_lab" / "local_ai.py"
+    if local_ai_src.is_file():
+        setup_lab_dir = target / "setup_lab"
+        setup_lab_dir.mkdir(exist_ok=True)
+        shutil.copy2(local_ai_src, setup_lab_dir / "local_ai.py")
 
 
 def run_ide_cli(cli: Path, *args: str) -> str:
@@ -267,7 +272,27 @@ def _keep_local_runtime(root: Path, config: dict) -> None:
     print("[OK] Da go Offline va API. Tich hop Ollama van san sang.")
 
 
-def uninstall_everything(kill_self_process: bool = False, *, local_shell_only: bool = False) -> bool:
+def _remove_local_ai_for_full_uninstall(root: Path) -> None:
+    """Remove Alt+5 local AI config, configured Ollama model, and user-installed Ollama."""
+    script_dir = str(Path(__file__).resolve().parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    try:
+        from setup_lab.local_ai import uninstall_local_ai
+    except ImportError:
+        local_dir = root.parent.parent / "PylanceHelperLocalAI"
+        if local_dir.exists():
+            _remove_tree(local_dir, root.parent.parent)
+        return
+    uninstall_local_ai(remove_configured_model=True, remove_user_ollama=True)
+
+
+def uninstall_everything(
+    kill_self_process: bool = False,
+    *,
+    local_shell_only: bool = False,
+    remove_all: bool = False,
+) -> bool:
     # Legacy callers still pass kill_self_process. The PID check excludes this process.
     manual_extension = False
     try:
@@ -275,7 +300,9 @@ def uninstall_everything(kill_self_process: bool = False, *, local_shell_only: b
         with install_lock(root):
             config = load_runtime(root)
             local_record = root.parent.parent / "PylanceHelperLocalAI" / "runtime.json"
-            if local_shell_only:
+            if remove_all:
+                _remove_local_ai_for_full_uninstall(root)
+            elif local_shell_only:
                 if config is None or config.get("baseEnabled", True) or local_record.exists():
                     return True
             elif config is not None and local_record.exists():
@@ -299,6 +326,16 @@ def uninstall_everything(kill_self_process: bool = False, *, local_shell_only: b
             elif uninstall_legacy(root):
                 return False
             _remove_tree(root, root.parent)
+            if remove_all:
+                logs_dir = root.parent.parent / "PylanceHelperLogs"
+                if logs_dir.exists():
+                    shutil.rmtree(logs_dir, ignore_errors=True)
+        if remove_all:
+            lock_file = root.parent / "PylanceHelper.lock"
+            try:
+                lock_file.unlink(missing_ok=True)
+            except OSError:
+                pass
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"[LOI] Go cai dat chua hoan tat. {exc}", file=sys.stderr)
         return False
@@ -314,10 +351,11 @@ def uninstall_everything(kill_self_process: bool = False, *, local_shell_only: b
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     component = parser.add_mutually_exclusive_group()
-    component.add_argument("--base-only", action="store_true", help="Go Offline va API.")
+    component.add_argument("--all", action="store_true", dest="remove_all", help="Go toan bo (Alt+1..5, extension va Ollama).")
+    component.add_argument("--base-only", action="store_true", help="Go Offline va API (giu lai Ollama neu co).")
     component.add_argument("--local-shell-only", action="store_true", help="Go tich hop IDE sau khi go Ollama.")
     args = parser.parse_args()
-    return 0 if uninstall_everything(local_shell_only=args.local_shell_only) else 1
+    return 0 if uninstall_everything(local_shell_only=args.local_shell_only, remove_all=args.remove_all) else 1
 
 
 if __name__ == "__main__":

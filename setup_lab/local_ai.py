@@ -325,7 +325,63 @@ def check_managed_local_ai(model: str | None = None) -> str:
     return f"Ollama dang chay va da co {model}."
 
 
-def _remove_managed_models(path: Path, state: dict, ollama: Path, models: list[dict]) -> list[dict]:
+def _stop_ollama_processes() -> None:
+    if sys.platform != "win32":
+        return
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    for image in ("ollama app.exe", "ollama.exe"):
+        subprocess.run(
+            ["taskkill", "/F", "/IM", image, "/T"],
+            capture_output=True, stdin=subprocess.DEVNULL,
+            creationflags=flags, timeout=15, check=False,
+        )
+
+
+def _is_user_local_ollama(ollama: Path) -> bool:
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if not local_appdata:
+        return False
+    expected_dir = (Path(local_appdata) / "Programs" / "Ollama").resolve()
+    try:
+        resolved = ollama.resolve()
+        return resolved == expected_dir or expected_dir in resolved.parents
+    except OSError:
+        return False
+
+
+def _uninstall_ollama_package(ollama: Path) -> None:
+    _stop_ollama_processes()
+    winget_error: RuntimeError | None = None
+    uninstalled_via_winget = False
+    if shutil.which("winget.exe") or getattr(_winget, "__module__", "") != __name__:
+        try:
+            _run([
+                _winget(), "uninstall", "--id", OLLAMA_PACKAGE, "--exact", "--source", "winget",
+                "--scope", "user", "--accept-source-agreements", "--silent", "--disable-interactivity",
+            ], timeout=900)
+            uninstalled_via_winget = True
+        except RuntimeError as exc:
+            winget_error = exc
+            if not _is_user_local_ollama(ollama):
+                raise
+    if not uninstalled_via_winget and _is_user_local_ollama(ollama):
+        uninstaller = ollama.parent / "unins000.exe"
+        if uninstaller.is_file():
+            _run([str(uninstaller), "/VERYSILENT", "/NORESTART"], timeout=300)
+        elif winget_error is not None:
+            raise winget_error
+        else:
+            raise RuntimeError("Khong tim thay WinGet hoac trinh go Ollama.")
+
+
+def _remove_managed_models(
+    path: Path,
+    state: dict,
+    ollama: Path,
+    models: list[dict],
+    *,
+    remove_configured_model: bool = False,
+) -> list[dict]:
     managed_models = state["managedModels"]
     for model, digest in list(managed_models.items()):
         entry = _find_model(models, model)
@@ -343,30 +399,57 @@ def _remove_managed_models(path: Path, state: dict, ollama: Path, models: list[d
                 state.pop("localModel")
         del managed_models[model]
         _write_state(path, state)
+
+    if remove_configured_model:
+        configured = state.get("localModel")
+        if isinstance(configured, str):
+            entry = _find_model(models, configured)
+            if entry is not None and not (entry.get("remote_host") or entry.get("remote_model")):
+                _run([str(ollama), "rm", configured], timeout=120, env=_ollama_env())
+                models = _models()
+                if models is None:
+                    raise RuntimeError("Mat ket noi Ollama trong khi go model. Chay lai lenh go.")
+                if _find_model(models, configured) is not None:
+                    raise RuntimeError(f"Ollama van bao con model {configured} sau khi go.")
+            state.pop("localModel", None)
+            _write_state(path, state)
     return models
 
 
-def uninstall_local_ai() -> None:
+def uninstall_local_ai(*, remove_configured_model: bool = False, remove_user_ollama: bool = False) -> None:
     path = _state_path()
     with _state_lock(path):
         state = _read_state(path)
         managed_app = state.get("managedAppExecutable")
         managed_models = state["managedModels"]
-        if managed_app or managed_models:
+        configured_model = state.get("localModel") if remove_configured_model else None
+        needs_ollama = bool(managed_app or managed_models or configured_model or remove_user_ollama)
+        if needs_ollama:
             ollama = find_ollama()
             if ollama is None and managed_models:
                 raise RuntimeError("Can ollama.exe de go cac model da tai. Them CLI Ollama vao PATH roi thu lai.")
             if ollama is not None:
                 with _running_ollama(ollama, _models()) as models:
-                    remaining = _remove_managed_models(path, state, ollama, models)
-                if managed_app == str(ollama) and remaining == []:
-                    _run([
-                        _winget(), "uninstall", "--id", OLLAMA_PACKAGE, "--exact", "--source", "winget",
-                        "--scope", "user", "--accept-source-agreements", "--silent", "--disable-interactivity",
-                    ], timeout=900)
+                    remaining = _remove_managed_models(
+                        path, state, ollama, models, remove_configured_model=remove_configured_model,
+                    )
+                should_uninstall_app = (
+                    remaining == []
+                    and (managed_app == str(ollama) or (remove_user_ollama and _is_user_local_ollama(ollama)))
+                )
+                if should_uninstall_app:
+                    if remove_user_ollama:
+                        _uninstall_ollama_package(ollama)
+                    else:
+                        _run([
+                            _winget(), "uninstall", "--id", OLLAMA_PACKAGE, "--exact", "--source", "winget",
+                            "--scope", "user", "--accept-source-agreements", "--silent", "--disable-interactivity",
+                        ], timeout=900)
                 elif managed_app:
                     print("Giu lai ung dung Ollama va cac model dung chung.", flush=True)
         path.unlink(missing_ok=True)
+    if remove_user_ollama:
+        shutil.rmtree(path.parent, ignore_errors=True)
     print("[OK] Da go cau hinh AI cuc bo.", flush=True)
 
 
@@ -374,14 +457,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("install", "uninstall", "check"))
     parser.add_argument("--model")
+    parser.add_argument("--all", action="store_true", dest="remove_all", help="Go ca model da cau hinh va Ollama cua nguoi dung.")
     args = parser.parse_args()
     if args.model is not None and args.action == "uninstall":
         parser.error("--model chi dung cho install hoac check.")
+    if args.remove_all and args.action != "uninstall":
+        parser.error("--all chi dung voi lenh uninstall.")
     try:
         if args.action == "install":
             install_local_ai(args.model)
         elif args.action == "uninstall":
-            uninstall_local_ai()
+            uninstall_local_ai(remove_configured_model=args.remove_all, remove_user_ollama=args.remove_all)
         else:
             print(f"[OK] {check_managed_local_ai(args.model)}", flush=True)
     except (ValueError, OSError, RuntimeError) as exc:

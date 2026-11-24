@@ -180,6 +180,43 @@ class UninstallTests(unittest.TestCase):
         self.assertIn("mo Extensions trong IDE va chon Uninstall", output)
         self.assertNotIn("DA GO CAI DAT THANH CONG", output)
 
+    def test_remove_all_uninstalls_base_local_ai_extension_and_logs(self):
+        cli = self.root / "code.cmd"
+        (self.install / "runtime.json").write_text(json.dumps({
+            "baseEnabled": True,
+            "ides": [{"cli": str(cli), "extension": uninstall.EXT_ID}],
+        }), encoding="utf-8")
+        local_dir = self.root / "local" / "PylanceHelperLocalAI"
+        local_dir.mkdir(parents=True)
+        (local_dir / "runtime.json").write_text(
+            '{"localModel":"qwen2.5-coder:1.5b","managedModels":{}}',
+            encoding="utf-8",
+        )
+        logs_dir = self.root / "local" / "PylanceHelperLogs"
+        logs_dir.mkdir(parents=True)
+        (logs_dir / "go_cai_dat.log").write_text("log", encoding="utf-8")
+
+        from setup_lab import local_ai
+        with patch.object(local_ai, "uninstall_local_ai") as remove_local, \
+                patch.object(uninstall, "list_extensions", side_effect=[{uninstall.EXT_ID}, set()]), \
+                patch.object(uninstall, "run_ide_cli") as command:
+            result, output = self.run_uninstall(remove_all=True)
+
+        self.assertTrue(result, output)
+        remove_local.assert_called_once_with(remove_configured_model=True, remove_user_ollama=True)
+        command.assert_called_once_with(cli, "--uninstall-extension", uninstall.EXT_ID)
+        self.assertFalse(self.install.exists())
+        self.assertFalse(logs_dir.exists())
+
+    def test_copy_runtime_files_includes_local_ai_helper(self):
+        source = Path(uninstall.__file__).resolve().parent
+        target = self.root / "copied-runtime"
+        target.mkdir()
+        uninstall.copy_runtime_files(source, target)
+        self.assertTrue((target / "core_engine" / "cli_entry.py").is_file())
+        self.assertTrue((target / "go_cai_dat.py").is_file())
+        self.assertTrue((target / "setup_lab" / "local_ai.py").is_file())
+
 
 class DaemonProcessTests(unittest.TestCase):
     def test_only_tool_daemons_are_killed_including_python_exe(self):

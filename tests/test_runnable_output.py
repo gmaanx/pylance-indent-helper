@@ -9,7 +9,7 @@ from unittest.mock import patch
 from core_engine import brain_router
 from core_engine.cli_entry import decode_request
 from core_engine.engine_pipeline import process_request
-from core_engine.runnable_output import code_prints_when_run, ensure_runnable_print
+from core_engine.runnable_output import code_prints_when_run, ensure_runnable_print, has_meaningful_runnable_main
 from tests.test_offline_geometry_classes import DIEM_PROMPT, VECTOR_PROMPT
 
 
@@ -232,6 +232,70 @@ class CloudAndOllamaRunnableOutputTests(unittest.TestCase):
         same, ok6 = ensure_runnable_print(already_prints, "# In ok")
         self.assertTrue(ok6)
         self.assertEqual(same, already_prints)
+
+        # 7. Dummy greeting main() or undefined main() is rejected as non-meaningful
+        dummy_main = (
+            "class HinhChuNhat:\n    def __init__(self, d, r):\n        self.d, self.r = d, r\n\n"
+            'def main():\n    print("Xin chao")\n\nif __name__ == "__main__":\n    main()\n'
+        )
+        self.assertFalse(has_meaningful_runnable_main(dummy_main, "# Viết lớp HinhChuNhat"))
+        _, ok7 = ensure_runnable_print(dummy_main, "# Viết lớp HinhChuNhat")
+        self.assertFalse(ok7)
+
+        undefined_main = (
+            "def tinh(a, b):\n    return a + b\n\n"
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        _, ok8 = ensure_runnable_print(undefined_main, "# Viết hàm tinh")
+        self.assertFalse(ok8)
+
+        shadowed_main = (
+            "def giai_thua(n):\n    return 1 if n <= 1 else n * giai_thua(n - 1)\n\n"
+            "def main():\n    giai_thua = giai_thua(5)\n    print(giai_thua)\n\n"
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        self.assertFalse(has_meaningful_runnable_main(shadowed_main, "# Viết hàm giai_thua"))
+
+    def test_ollama_repairs_dummy_or_missing_main_in_one_followup_call(self):
+        prompt = '# Viết lớp HinhChuNhat(dai, rong) tính dien_tich().'
+        dummy_draft = (
+            "class HinhChuNhat:\n"
+            "    def __init__(self, dai, rong):\n"
+            "        self.dai, self.rong = dai, rong\n"
+            "    def dien_tich(self):\n"
+            "        return self.dai * self.rong\n\n"
+            'if __name__ == "__main__":\n'
+            '    print("Xin chao")\n'
+        )
+        repaired_code = (
+            "class HinhChuNhat:\n"
+            "    def __init__(self, dai, rong):\n"
+            "        self.dai, self.rong = dai, rong\n"
+            "    def dien_tich(self):\n"
+            "        return self.dai * self.rong\n\n"
+            "def main():\n"
+            "    hcn = HinhChuNhat(4, 5)\n"
+            "    print(hcn.dien_tich())\n\n"
+            'if __name__ == "__main__":\n'
+            "    main()\n"
+        )
+        with patch.object(
+            brain_router, "_post_json",
+            side_effect=[
+                {},
+                {"done": True, "response": dummy_draft},
+                {"done": True, "response": repaired_code},
+            ],
+        ) as post:
+            res = decode_request(json.dumps({
+                "text": prompt,
+                "mode": "local",
+                "allow_local": True,
+            }), allow_network=True)
+
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(_exec_import(res["code"]), "")
+        self.assertEqual(_exec_main(res["code"]), "20\n")
 
 
 if __name__ == "__main__":

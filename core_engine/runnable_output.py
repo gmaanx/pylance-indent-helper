@@ -323,9 +323,147 @@ def render_main_output(
 # Static AST auto-print detection & safe fallback for API / Ollama output
 # ---------------------------------------------------------------------------
 
-def _prompt_forbids_print(prompt: str) -> bool:
+def prompt_forbids_print(prompt: str) -> bool:
     folded = strip_accents(prompt).casefold()
     return any(re.search(pattern, folded) for pattern in _FORBID_PRINT_PATTERNS)
+
+
+_prompt_forbids_print = prompt_forbids_print
+
+
+_DUMMY_GREETINGS = {
+    "xin chao", "xin chao!", "chao", "chao ban", "chao ban!",
+    "hello", "hello!", "hello world", "hello, world!", "hello world!",
+}
+
+
+def _references_defined_symbol(tree: ast.Module, entry_nodes: List[ast.AST]) -> bool:
+    """Return True if module defines no non-main APIs or entry_nodes transitively use at least one."""
+    public_defs: Set[str] = set()
+    func_bodies: Dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+            public_defs.add(node.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):
+            func_bodies[node.name] = node
+            if node.name != "main":
+                public_defs.add(node.name)
+
+    if not public_defs:
+        return True
+
+    visited_funcs: Set[str] = set()
+    queue: List[ast.AST] = list(entry_nodes)
+    while queue:
+        current = queue.pop()
+        for sub in ast.walk(current):
+            if isinstance(sub, ast.Name):
+                if sub.id in public_defs:
+                    return True
+                if sub.id in func_bodies and sub.id not in visited_funcs:
+                    visited_funcs.add(sub.id)
+                    queue.append(func_bodies[sub.id])
+    return False
+
+
+def _only_dummy_greeting_print(entry_nodes: List[ast.AST], tree: ast.Module, prompt: str) -> bool:
+    """Detect hollow main() blocks that only print 'Xin chao' / 'Hello World' when not requested."""
+    folded_prompt = strip_accents(prompt).casefold()
+    if any(word in folded_prompt for word in ("xin chao", "hello world", "chao the gioi")):
+        return False
+
+    func_bodies = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    expanded: List[ast.AST] = list(entry_nodes)
+    seen: Set[str] = set()
+    for node in list(expanded):
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                if sub.func.id in func_bodies and sub.func.id not in seen:
+                    seen.add(sub.func.id)
+                    expanded.append(func_bodies[sub.func.id])
+
+    print_calls: List[ast.Call] = []
+    for node in expanded:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id == "print":
+                print_calls.append(sub)
+    if not print_calls:
+        return False
+    for call in print_calls:
+        if len(call.args) != 1 or not isinstance(call.args[0], ast.Constant) or not isinstance(call.args[0].value, str):
+            return False
+        text = strip_accents(call.args[0].value).strip().casefold()
+        if text not in _DUMMY_GREETINGS:
+            return False
+    return True
+
+
+def _has_main_unbound_local_shadow(tree: ast.Module) -> bool:
+    """Detect `def main(): foo = foo(...)` shadowing a top-level function/class."""
+    top_symbols = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name != "main"
+    }
+    if not top_symbols:
+        return False
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main":
+            assigned: Set[str] = set()
+            called: Set[str] = set()
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                    assigned.add(sub.id)
+                elif isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                    called.add(sub.func.id)
+            if assigned & called & top_symbols:
+                return True
+    return False
+
+
+def has_meaningful_runnable_main(code: str, prompt: str = "") -> bool:
+    """
+    Return True when running the module as __main__ reaches real output AND exercises
+    at least one defined public class/function (rejecting hollow `print('Xin chao')` stubs).
+    """
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+
+    printing_funcs = _printing_functions(tree)
+    entry_nodes: List[ast.AST] = []
+    reaches_output = False
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+            continue
+        if isinstance(stmt, ast.Raise):
+            return True
+        if _is_main_guard(stmt):
+            entry_nodes.extend(stmt.body)
+            for sub in stmt.body:
+                has_out, called = _call_names_in_node(sub)
+                if has_out or (called & printing_funcs):
+                    reaches_output = True
+            continue
+        entry_nodes.append(stmt)
+        has_out, called = _call_names_in_node(stmt)
+        if has_out or (called & printing_funcs):
+            reaches_output = True
+
+    if not reaches_output:
+        return False
+    if _only_dummy_greeting_print(entry_nodes, tree, prompt):
+        return False
+    if _has_main_unbound_local_shadow(tree):
+        return False
+    return _references_defined_symbol(tree, entry_nodes)
 
 
 def _is_main_guard(node: ast.stmt) -> bool:
@@ -645,7 +783,7 @@ def ensure_runnable_print(
         return code, False
     if editing_existing or _prompt_forbids_print(prompt):
         return code, True
-    if code_prints_when_run(code):
+    if has_meaningful_runnable_main(code, prompt):
         return code, True
 
     try:
@@ -653,7 +791,17 @@ def ensure_runnable_print(
     except (SyntaxError, ValueError, RecursionError):
         return code, False
 
+    # If the model wrote a hollow/dummy main() or __main__ (e.g., `print("Xin chao")`),
+    # do not treat it as valid runnable output; let static fallback or model repair handle it.
+    if code_prints_when_run(code):
+        return code, False
+
     # 1. Existing `if __name__ == "__main__":` block that computes a value without printing.
+    defined_names: Set[str] = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
     main_blocks = [stmt for stmt in tree.body if _is_main_guard(stmt)]
     if main_blocks:
         last_main = main_blocks[-1]
@@ -668,6 +816,8 @@ def ensure_runnable_print(
                 isinstance(last_stmt, ast.Expr)
                 and isinstance(last_stmt.value, ast.Call)
                 and last_stmt.lineno == last_stmt.end_lineno
+                and isinstance(last_stmt.value.func, ast.Name)
+                and last_stmt.value.func.id in defined_names
             ):
                 lines = code.splitlines()
                 idx = last_stmt.lineno - 1
@@ -729,12 +879,22 @@ def ensure_runnable_print(
     if sample_call:
         imp, print_stmt = _format_print_expression("_ket_qua", prompt)
         base = _prepend_import(code.rstrip(), imp)
-        block = (
-            '\n\nif __name__ == "__main__":\n'
-            f"    _ket_qua = {sample_call}\n"
-            "    if _ket_qua is not None:\n"
-            f"        {print_stmt}\n"
-        )
+        if "main" not in funcs:
+            block = (
+                "\n\n\ndef main():\n"
+                f"    _ket_qua = {sample_call}\n"
+                "    if _ket_qua is not None:\n"
+                f"        {print_stmt}\n\n\n"
+                'if __name__ == "__main__":\n'
+                "    main()\n"
+            )
+        else:
+            block = (
+                '\n\nif __name__ == "__main__":\n'
+                f"    _ket_qua = {sample_call}\n"
+                "    if _ket_qua is not None:\n"
+                f"        {print_stmt}\n"
+            )
         return base + block, True
 
     # 3b. Zero-required-argument public function (e.g., `def main():`, `def result(): return 3`).
@@ -745,12 +905,22 @@ def ensure_runnable_print(
         chosen = next((name for name in _PREFERRED_ENTRY_FUNCS if name in zero_arg_funcs), zero_arg_funcs[-1])
         imp, print_stmt = _format_print_expression("_ket_qua", prompt)
         base = _prepend_import(code.rstrip(), imp)
-        block = (
-            '\n\nif __name__ == "__main__":\n'
-            f"    _ket_qua = {chosen}()\n"
-            "    if _ket_qua is not None:\n"
-            f"        {print_stmt}\n"
-        )
+        if chosen != "main" and "main" not in funcs:
+            block = (
+                "\n\n\ndef main():\n"
+                f"    _ket_qua = {chosen}()\n"
+                "    if _ket_qua is not None:\n"
+                f"        {print_stmt}\n\n\n"
+                'if __name__ == "__main__":\n'
+                "    main()\n"
+            )
+        else:
+            block = (
+                '\n\nif __name__ == "__main__":\n'
+                f"    _ket_qua = {chosen}()\n"
+                "    if _ket_qua is not None:\n"
+                f"        {print_stmt}\n"
+            )
         return base + block, True
 
     # 3c. Zero-required-argument public class with zero-arg method or printable representation.
@@ -771,18 +941,18 @@ def ensure_runnable_print(
             base = _prepend_import(code.rstrip(), imp)
             if zero_methods:
                 method = next((m for m in _PREFERRED_ENTRY_FUNCS if m in zero_methods), zero_methods[0])
-                block = (
-                    '\n\nif __name__ == "__main__":\n'
+                body_lines = (
                     f"    _obj = {cls.name}()\n"
                     f"    _ket_qua = _obj.{method}()\n"
                     "    if _ket_qua is not None:\n"
                     f"        {print_stmt}\n"
                 )
             else:
-                block = (
-                    '\n\nif __name__ == "__main__":\n'
-                    f"    print({cls.name}())\n"
-                )
+                body_lines = f"    print({cls.name}())\n"
+            if "main" not in funcs:
+                block = f'\n\n\ndef main():\n{body_lines}\n\nif __name__ == "__main__":\n    main()\n'
+            else:
+                block = f'\n\nif __name__ == "__main__":\n{body_lines}'
             return base + block, True
 
     return code, False

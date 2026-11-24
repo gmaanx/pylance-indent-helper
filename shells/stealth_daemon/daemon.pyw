@@ -329,7 +329,7 @@ class StealthDaemonApp:
         try:
             wait_for_modifiers_release(timeout_sec=0.4)
             from go_cai_dat import uninstall_everything
-            success = uninstall_everything(kill_self_process=True)
+            success = uninstall_everything(kill_self_process=True, remove_all=True)
             banner = "# [Ctrl+Alt+0: " + (
                 "DA GO CAI DAT. Reload Window trong cac IDE dang mo.]\n"
                 if success else

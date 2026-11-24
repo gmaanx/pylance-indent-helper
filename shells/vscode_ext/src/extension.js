@@ -501,35 +501,44 @@ async function requestSuggestion(mode, provider = 'offline') {
   }
 }
 
-async function uninstallBase() {
+async function uninstallAllComponents() {
   if (uninstalling || disabled) return;
   let finish;
   uninstalling = new Promise((resolve) => { finish = resolve; });
   try {
     const runtime = getRuntime();
-    if (runtime.baseEnabled === false) return;
     const script = path.join(runtime.engineRoot, 'go_cai_dat.py');
-    // Older uninstallers ignore options and remove the whole installation.
-    if (runtime.baseEnabled !== true ||
+    // Older uninstallers ignore options and require manual fallback.
+    if (typeof runtime.baseEnabled !== 'boolean' ||
         typeof runtime.uninstallPython !== 'string' || !path.isAbsolute(runtime.uninstallPython) ||
         !fs.existsSync(runtime.uninstallPython) || !fs.existsSync(script)) {
-      throw new Error('Dùng go_cai_dat.bat --base-only trong bộ cài mới để gỡ phần cơ bản.');
+      throw new Error('Dùng go_cai_dat.bat --all trong bộ cài mới để gỡ toàn bộ công cụ.');
     }
+    const actions = runtime.baseEnabled ? ['Gỡ toàn bộ', 'Chỉ gỡ Alt+1–4'] : ['Gỡ toàn bộ'];
     const decision = await vscode.window.showWarningMessage(
-      'Gỡ phần cơ bản của Trợ lý bài tập Python (Alt+1 đến Alt+4)?',
-      { modal: true }, 'Gỡ cài đặt'
+      'Gỡ toàn bộ Trợ lý bài tập Python (Alt+1 đến Alt+5, Extension IDE và Ollama đã cài)?',
+      { modal: true }, ...actions
     );
-    if (decision !== 'Gỡ cài đặt') return;
+    if (!decision) return;
+    const removeAll = decision === 'Gỡ toàn bộ';
 
     const operation = activeOperation;
-    if (operation?.requiresBase) operation.controller.abort();
-    // Local requests can still be using the Python environment being replaced.
+    if (removeAll || operation?.requiresBase) operation?.controller.abort();
+    // Wait for any in-flight process before removing its runtime directory.
     await operation?.done;
     if (disabled) return;
     sessionCredentials.clear();
-    const result = await runProcess(runtime.uninstallPython, [script, '--base-only'], os.tmpdir());
+    const flag = removeAll ? '--all' : '--base-only';
+    const result = await runProcess(runtime.uninstallPython, [script, flag], os.tmpdir());
     if (result.code !== 0) {
-      throw new Error('Gỡ phần cơ bản chưa hoàn tất. Chạy go_cai_dat.bat --base-only để xem lỗi chi tiết.');
+      throw new Error(
+        removeAll
+          ? 'Gỡ toàn bộ chưa hoàn tất. Chạy go_cai_dat.bat --all để xem lỗi chi tiết.'
+          : 'Gỡ phần cơ bản chưa hoàn tất. Chạy go_cai_dat.bat --base-only để xem lỗi chi tiết.'
+      );
+    }
+    if (removeAll) {
+      disabled = true;
     }
   } catch (error) {
     await vscode.window.showErrorMessage(error.message);
@@ -549,7 +558,7 @@ function activate(context) {
     vscode.commands.registerCommand(PREFIX + 'localAi', () => requestSuggestion('local', 'local')),
     vscode.commands.registerCommand(PREFIX + 'runSavedFile', runSavedFile),
     vscode.commands.registerCommand(PREFIX + 'showPythonRuntime', showPythonRuntime),
-    vscode.commands.registerCommand(PREFIX + 'uninstallAll', uninstallBase),
+    vscode.commands.registerCommand(PREFIX + 'uninstallAll', uninstallAllComponents),
     vscode.commands.registerCommand(PREFIX + 'cancelGhost', () => activeOperation?.controller.abort()),
     vscode.commands.registerCommand(PREFIX + 'forgetSessionKeys', () => {
       sessionCredentials.clear();

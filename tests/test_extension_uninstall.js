@@ -120,11 +120,11 @@ function harness({
         notices.push({ kind: 'status', message });
         return disposable;
       },
-      showWarningMessage: async (message, options, action) => {
-        notices.push({ kind: 'warning', message, options });
-        if (action === 'Gửi') return state.send;
-        if (action === 'Gỡ cài đặt') return state.uninstall;
-        if (!action && state.warning) return state.warning();
+      showWarningMessage: async (message, options, ...actions) => {
+        notices.push({ kind: 'warning', message, options, actions });
+        if (actions.includes('Gửi')) return state.send;
+        if (actions.includes('Gỡ toàn bộ') || actions.includes('Gỡ cài đặt')) return state.uninstall;
+        if (!actions.length && state.warning) return state.warning();
       },
       showErrorMessage: async (message) => { notices.push({ kind: 'error', message }); },
       showQuickPick: async (providers) => providers.find((provider) => provider.id === 'groq'),
@@ -486,18 +486,18 @@ test('missing installation never chooses a source path', async () => {
   assert.match(h.notices.at(-1).message, /setup_nhanh\.bat/);
 });
 
-test('Alt+0 confirms and invokes only the BASE uninstall without a success notice or reload', async () => {
+test('Alt+0 confirms and invokes FULL uninstall (--all) removing Alt+1..5 and Ollama', async () => {
   const packageJson = require('../shells/vscode_ext/package.json');
   assert.ok(packageJson.contributes.keybindings.some(({ command, key }) => command === 'pylanceIndentHelper.uninstallAll' && key === 'alt+0'));
   const h = harness({ noEditor: true });
   await h.run('uninstallAll');
   assert.equal(h.children.length, 0);
-  h.state.uninstall = 'Gỡ cài đặt';
+  h.state.uninstall = 'Gỡ toàn bộ';
   const pending = h.run('uninstallAll');
   await flush();
   assert.equal(h.children.length, 1);
   assert.equal(h.children[0].executable, h.uninstallPython);
-  assert.deepEqual([...h.children[0].args], [h.uninstallScript, '--base-only']);
+  assert.deepEqual([...h.children[0].args], [h.uninstallScript, '--all']);
   assert.notEqual(h.children[0].options.cwd, h.engineRoot);
   assert.ok(h.notices.every(({ kind, options }) => kind === 'warning' && options.modal));
   h.children[0].emit('close', 0);
@@ -505,29 +505,50 @@ test('Alt+0 confirms and invokes only the BASE uninstall without a success notic
   assert.ok(h.notices.every(({ kind }) => kind === 'warning'));
   assert.deepEqual(h.editorCommands, []);
   assert.equal(h.edits.length, 0);
+  // Once fully uninstalled, Alt+1..5 stop immediately even before Reload Window.
+  await h.run('localAi');
+  assert.equal(h.children.length, 1);
 });
 
-test('failed, unavailable or legacy uninstall names the BASE manual fallback', async () => {
+test('Alt+0 also works when only Ollama (Alt+5) is installed and aborts active Ollama on full uninstall', async () => {
+  const h = harness({ baseEnabled: false });
+  const active = h.run('localAi');
+  await flush();
+  h.state.uninstall = 'Gỡ toàn bộ';
+  const removal = h.run('uninstallAll');
+  await flush();
+  assert.equal(h.children[0].killed, true);
+  finish(h.children[0], 'print(1)');
+  await active;
+  await flush();
+  assert.equal(h.children.length, 2);
+  assert.deepEqual([...h.children[1].args], [h.uninstallScript, '--all']);
+  h.children[1].emit('close', 0);
+  await removal;
+  assert.equal(h.edits.length, 0);
+});
+
+test('failed, unavailable or legacy uninstall names the full manual fallback', async () => {
   for (const options of [{ missingUninstaller: true }, {}, { legacyLocalModel: 'local:1b' }]) {
     const h = harness(options);
     if (options.legacyLocalModel) delete h.runtime.baseEnabled;
-    h.state.uninstall = 'Gỡ cài đặt';
+    h.state.uninstall = 'Gỡ toàn bộ';
     const pending = h.run('uninstallAll');
     await flush();
     if (options.missingUninstaller || options.legacyLocalModel) assert.equal(h.children.length, 0);
     else h.children[0].emit('close', 1);
     await pending;
     assert.equal(h.notices.at(-1).kind, 'error');
-    assert.match(h.notices.at(-1).message, /go_cai_dat\.bat --base-only/);
+    assert.match(h.notices.at(-1).message, /go_cai_dat\.bat --all/);
     assert.equal(h.edits.length, 0);
   }
 });
 
-test('Alt+0 waits for active Ollama and Alt+5 can use the lean runtime afterward', async () => {
+test('Alt+0 base-only choice waits for active Ollama and Alt+5 can use the lean runtime afterward', async () => {
   const h = harness();
   const local = h.run('localAi');
   await flush();
-  h.state.uninstall = 'Gỡ cài đặt';
+  h.state.uninstall = 'Chỉ gỡ Alt+1–4';
   const removal = h.run('uninstallAll');
   await flush();
   assert.equal(h.children.length, 1);
@@ -536,6 +557,7 @@ test('Alt+0 waits for active Ollama and Alt+5 can use the lean runtime afterward
   await local;
   await flush();
   assert.equal(h.children.length, 2);
+  assert.deepEqual([...h.children[1].args], [h.uninstallScript, '--base-only']);
   const next = h.run('localAi');
   await flush();
   assert.equal(h.children.length, 2);
