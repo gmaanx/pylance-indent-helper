@@ -1,6 +1,9 @@
 """Install and remove the optional per-user Ollama component on Windows."""
 
+from __future__ import annotations
+
 import argparse
+import ctypes
 import json
 import os
 import re
@@ -17,10 +20,42 @@ from pathlib import Path
 
 
 DEFAULT_MODEL = "qwen2.5-coder:1.5b"
+BALANCED_MODEL = "qwen2.5-coder:3b"
 OLLAMA_HOST = "127.0.0.1:11434"
 OLLAMA_PACKAGE = "Ollama.Ollama"
 LOCAL_AI_DIR = "PylanceHelperLocalAI"
 _MAX_TAGS_RESPONSE = 1_000_000
+
+
+def detect_ram_gb() -> float:
+    if sys.platform != "win32":
+        return 8.0
+    try:
+        class _MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        stat = _MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return stat.ullTotalPhys / (1024 ** 3)
+    except Exception:
+        pass
+    return 8.0
+
+
+def recommend_model_for_machine() -> str:
+    ram_gb = detect_ram_gb()
+    return BALANCED_MODEL if ram_gb >= 12.0 else DEFAULT_MODEL
 
 
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -291,11 +326,21 @@ def migrate_legacy_local_ai(config: dict) -> None:
         _write_state(path, state)
 
 
-def install_local_ai(model: str | None = None) -> dict:
+def install_local_ai(model: str | None = None, *, auto_model: bool = False) -> dict:
     path = _state_path()
     with _state_lock(path):
         state = _read_state(path)
-        model = normalize_model(state.get("localModel", DEFAULT_MODEL) if model is None else model)
+        if model is None:
+            saved = state.get("localModel")
+            if isinstance(saved, str) and saved.strip():
+                model = normalize_model(saved)
+            elif auto_model:
+                model = recommend_model_for_machine()
+                print(f"[Auto] Chon model {model} theo dung luong RAM cua may.", flush=True)
+            else:
+                model = DEFAULT_MODEL
+        else:
+            model = normalize_model(model)
 
         def record_install(ollama: Path) -> None:
             state["managedAppExecutable"] = str(ollama)
@@ -457,15 +502,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("install", "uninstall", "check"))
     parser.add_argument("--model")
+    parser.add_argument("--auto-model", action="store_true", help="Tu chon model theo RAM may (3b neu >= 12GB, nguoc lai 1.5b).")
     parser.add_argument("--all", action="store_true", dest="remove_all", help="Go ca model da cau hinh va Ollama cua nguoi dung.")
     args = parser.parse_args()
     if args.model is not None and args.action == "uninstall":
         parser.error("--model chi dung cho install hoac check.")
+    if args.auto_model and args.action == "uninstall":
+        parser.error("--auto-model chi dung cho install hoac check.")
     if args.remove_all and args.action != "uninstall":
         parser.error("--all chi dung voi lenh uninstall.")
     try:
         if args.action == "install":
-            install_local_ai(args.model)
+            install_local_ai(args.model, auto_model=args.auto_model)
         elif args.action == "uninstall":
             uninstall_local_ai(remove_configured_model=args.remove_all, remove_user_ollama=args.remove_all)
         else:

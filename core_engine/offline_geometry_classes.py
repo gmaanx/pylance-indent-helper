@@ -54,6 +54,26 @@ class Diem3D:
         return math.hypot(self.x, self.y, self.z)
 
 
+class NutTimKiem:
+    def __init__(self, state, parent=None, action=None, g=0.0, h=0.0):
+        self.state = state
+        self.parent = parent
+        self.action = action
+        self.g = float(g)
+        self.h = float(h)
+
+    def f_cost(self):
+        return self.g + self.h
+
+    def truy_vet_duong_di(self):
+        duong_di = []
+        hien_tai = self
+        while hien_tai is not None:
+            duong_di.append(hien_tai.state)
+            hien_tai = hien_tai.parent
+        return duong_di[::-1]
+
+
 def _real_coord(value, label):
     from .offline_solver import OfflineProblemError
 
@@ -145,4 +165,44 @@ def _diem3d(problem):
     )
 
 
-GEOMETRY_CLASS_SOLVERS = {"vector24": _vector24, "diem3d": _diem3d}
+def _nut_tim_kiem(problem):
+    from .offline_solver import OfflineSolution, _CURRENT_OUTPUT_SPEC, _fields
+    from .runnable_output import render_main_output
+
+    _fields(problem, ("type",))
+    setup = (
+        '    goc = NutTimKiem("A", parent=None, action=None, g=0.0, h=5.0)\n'
+        '    giua = NutTimKiem("B", parent=goc, action="A->B", g=2.0, h=3.0)\n'
+        '    dich = NutTimKiem("G", parent=giua, action="B->G", g=5.0, h=0.0)\n'
+    )
+    output_spec = _CURRENT_OUTPUT_SPEC.get()
+    if output_spec:
+        expr = '{"f_cost": dich.f_cost(), "path": dich.truy_vet_duong_di()}'
+        extra_imports, body = render_main_output(expr, output_spec, default_collection_field="path")
+    else:
+        extra_imports = ""
+        body = (
+            '    print("Duong di:", dich.truy_vet_duong_di())\n'
+            '    print("Tong chi phi f(n):", dich.f_cost())\n'
+        )
+    code = (
+        f"{extra_imports}"
+        + inspect.getsource(NutTimKiem).rstrip()
+        + '\n\n\ndef main():\n'
+        + setup
+        + body
+        + '\n\nif __name__ == "__main__":\n    main()\n'
+    )
+    return OfflineSolution(
+        "nut_tim_kiem",
+        code,
+        "Lớp NutTimKiem tính f(n) = g(n) + h(n) và truy vết đường đi từ gốc tới đích.",
+        ("Lưu state, parent, action, g, h và trả danh sách trạng thái theo thứ tự đầu -> đích.",),
+    )
+
+
+GEOMETRY_CLASS_SOLVERS = {
+    "vector24": _vector24,
+    "diem3d": _diem3d,
+    "nut_tim_kiem": _nut_tim_kiem,
+}

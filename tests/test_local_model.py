@@ -43,7 +43,7 @@ class LocalModelTests(unittest.TestCase):
                 self.assertIn(prompt, post.call_args.args[2]["prompt"])
                 self.assertEqual(result["tier_used"], "tier2_ollama")
                 self.assertEqual(result["validation_status"], "syntax_checked")
-                self.assertTrue(result["code"].startswith("# [Alt+5 · Ollama |"))
+                self.assertFalse(result["code"].startswith("# ["))
 
     def test_alt_five_surfaces_ollama_errors_without_an_offline_result(self):
         error = HTTPError("http://127.0.0.1:11434/api/show", 404, "not found", {}, None)

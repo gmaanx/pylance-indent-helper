@@ -1,4 +1,6 @@
-﻿"""Read an offline or explicitly authorized Cloud request over stdin."""
+﻿"""Read an offline or explicitly authorized Cloud/Local request over stdin."""
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -34,6 +36,10 @@ def decode_request(raw: str, mode: str = "full", verify: bool = True, *, allow_n
     text = raw
     cloud = False
     local = False
+    shadow_exec = False
+    rag_fallback = False
+    file_path = None
+    notebook_context = None
     credentials = {}
     if raw.lstrip().startswith("{"):
         try:
@@ -46,6 +52,14 @@ def decode_request(raw: str, mode: str = "full", verify: bool = True, *, allow_n
             verify = request.get("verify", verify)
             cloud = allow_network and mode != "local" and request.get("allow_cloud") is True
             local = allow_network and request.get("allow_local") is True
+            shadow_exec = allow_network and request.get("shadow_exec") is True
+            rag_fallback = request.get("allow_rag_fallback") is True
+            raw_fp = request.get("file_path")
+            if isinstance(raw_fp, str) and len(raw_fp) <= 4096:
+                file_path = raw_fp
+            raw_nb = request.get("notebook_context")
+            if isinstance(raw_nb, str) and len(raw_nb) <= 32_768:
+                notebook_context = raw_nb
             if cloud:
                 credentials = request.get("credentials")
                 if not isinstance(credentials, dict) or not credentials or any(
@@ -67,6 +81,10 @@ def decode_request(raw: str, mode: str = "full", verify: bool = True, *, allow_n
                 verify_shadow=verify,
                 allow_cloud=cloud,
                 allow_local=local,
+                allow_shadow_exec=shadow_exec,
+                allow_rag_fallback=rag_fallback,
+                file_path=file_path,
+                notebook_context=notebook_context,
             )
         except (ValueError, RecursionError):
             return _invalid_request("Dữ liệu yêu cầu không hợp lệ.")
@@ -125,7 +143,8 @@ def main() -> None:
         run_server(port=args.port)
         return
 
-    sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
     if len(raw) > MAX_INPUT_BYTES:
         result = _invalid_request("Yêu cầu vượt quá 256 KiB.")

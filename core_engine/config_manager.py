@@ -1,5 +1,7 @@
 ﻿"""Runtime preferences and API credentials scoped to a single request."""
 
+from __future__ import annotations
+
 import base64
 import json
 import os
@@ -31,6 +33,79 @@ def deobfuscate_str(encoded: str) -> str:
         return _xor_bytes(base64.urlsafe_b64decode(encoded)).decode("utf-8")
     except (ValueError, UnicodeError):
         return ""
+
+
+def _credentials_file(install_dir: Path | None = None) -> Path | None:
+    if install_dir is not None:
+        return install_dir / "credentials.json"
+    local_app = os.environ.get("LOCALAPPDATA")
+    if not local_app or not Path(local_app).is_absolute():
+        return None
+    return Path(local_app).resolve() / "Programs" / "PylanceHelper" / "credentials.json"
+
+
+def save_encrypted_credential(provider: str, key: str, install_dir: Path | None = None) -> Path:
+    provider = provider.strip().lower()
+    cleaned = key.strip()
+    if provider not in PROVIDERS:
+        raise ValueError(f"Nha cung cap khong hop le: {provider}")
+    if not cleaned or len(cleaned) > 1024 or any(ch.isspace() for ch in cleaned):
+        raise ValueError("API key khong hop le.")
+    target = _credentials_file(install_dir)
+    if target is None:
+        raise RuntimeError("Khong tim thay thu muc LOCALAPPDATA de luu cau hinh.")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing: dict[str, str] = {}
+    if target.is_file():
+        try:
+            raw = json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and isinstance(raw.get("encoded"), dict):
+                existing = {
+                    k: v for k, v in raw["encoded"].items()
+                    if k in PROVIDERS and isinstance(v, str)
+                }
+        except (OSError, ValueError):
+            existing = {}
+    existing[provider] = obfuscate_str(cleaned)
+    payload = {"activeProvider": provider, "encoded": existing}
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return target
+
+
+def load_encrypted_credentials(install_dir: Path | None = None) -> dict[str, str]:
+    target = _credentials_file(install_dir)
+    if target is None or not target.is_file():
+        return {}
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict) or not isinstance(raw.get("encoded"), dict):
+        return {}
+    encoded_map = raw["encoded"]
+    active = raw.get("activeProvider")
+    ordered_providers = (
+        [active, *[p for p in PROVIDERS if p != active]]
+        if isinstance(active, str) and active in PROVIDERS
+        else list(PROVIDERS)
+    )
+    decoded: dict[str, str] = {}
+    for provider in ordered_providers:
+        enc = encoded_map.get(provider)
+        if isinstance(enc, str) and enc.strip():
+            plain = deobfuscate_str(enc.strip()).strip()
+            if plain and len(plain) <= 1024 and not any(ch.isspace() for ch in plain):
+                decoded[provider] = plain
+    return decoded
+
+
+def clear_encrypted_credentials(install_dir: Path | None = None) -> None:
+    target = _credentials_file(install_dir)
+    if target is not None:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 DEFAULT_CONFIG: dict[str, Any] = {

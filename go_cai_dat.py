@@ -5,6 +5,8 @@ Các IDE đang mở cần Reload Window để bỏ hẳn phím tắt đã nạp 
 Extension mới sẽ tự ngừng xử lý ngay khi bản cài bị gỡ.
 """
 
+from __future__ import annotations
+
 import argparse
 from contextlib import contextmanager
 import json

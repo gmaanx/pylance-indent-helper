@@ -7,10 +7,20 @@ from .golden_skeletons import strip_accents
 
 _BOARD_3 = r"\(\s*\(\s*[0-8]\s*,\s*[0-8]\s*,\s*[0-8]\s*\)\s*,\s*\(\s*[0-8]\s*,\s*[0-8]\s*,\s*[0-8]\s*\)\s*,\s*\(\s*[0-8]\s*,\s*[0-8]\s*,\s*[0-8]\s*\)\s*\)"
 _PUZZLE = re.compile(
-    r"(?:cau\s+\d+\s*:\s*)?cho bai toan 8-puzzle voi trang thai ban dau\s*:\s*"
-    rf"(?P<start>{_BOARD_3})\s+va trang thai dich\s*:?\s*(?P<goal>{_BOARD_3})\s*\.\s*"
-    r"hay cai dat bang thu vien simpleai va giai bang thuat toan a\* voi (?:2|hai) ham heuristic h1 va h2\.?",
+    r"(?:cau\s+\d+\s*:\s*)?(?:cho|giai|xet)?\s*(?:bai toan\s+)?8[ -]?puzzle voi trang thai (?:ban dau|dau)\s*:?\s*"
+    rf"(?P<start>{_BOARD_3})\s+va (?:trang thai )?(?:dich|muc tieu)\s*:?\s*(?P<goal>{_BOARD_3})\s*[.,;]?\s*"
+    r"(?:hay\s+)?(?:cai dat|viet chuong trinh|giai)\s+bang\s+(?:thu vien\s+)?simpleai(?:\s+(?:va\s+)?giai)?"
+    r"\s+bang\s+(?:thuat toan\s+)?a\*(?:\s+voi\s+(?P<hmode>(?:2|hai)\s+ham\s+heuristic(?:\s+h1\s+va\s+h2)?|(?:khoang cach\s+)?manhattan|so o sai(?: vi tri)?))?\.?",
     re.IGNORECASE,
+)
+_NUT_TIM_KIEM = re.compile(
+    r"(?:bai\s+[0-9]+(?:\.[0-9]+)*\s*:\s*)?(?:lop\s+nuttimkiem(?:\s*\([^)]*\))?\s*)?"
+    r"(?:viet|tao|cai dat)\s+(?:mot\s+)?lop\s+nuttimkiem\b"
+    r".*?__init__\(\s*self\s*,\s*state\s*,\s*parent\s*=\s*none\s*,\s*action\s*=\s*none\s*,\s*g\s*=\s*0(?:\.0)?\s*,\s*h\s*=\s*0(?:\.0)?\s*\)"
+    r".*?f_cost\(\s*self\s*\)"
+    r".*?truy_vet_duong_di\(\s*self\s*\)"
+    r"[^{}@]*",
+    re.IGNORECASE | re.DOTALL,
 )
 _LIST = r"\[\s*(?:'[^'\r\n]+'|\"[^\"\r\n]+\")\s*(?:,\s*(?:'[^'\r\n]+'|\"[^\"\r\n]+\")\s*)*\]"
 _SHIFTS = re.compile(
@@ -97,12 +107,24 @@ def _parse_shifts(match, original, offsets):
 
 def read_course_prompt(text):
     normalized = strip_accents(text)
-    if match := _PUZZLE.fullmatch(re.sub(r"\s+", " ", normalized).strip()):
+    collapsed = re.sub(r"\s+", " ", normalized).strip()
+    if match := _PUZZLE.fullmatch(collapsed):
         boards = {
             field: [tile for row in ast.literal_eval(match[field]) for tile in row]
             for field in ("start", "goal")
         }
-        return {"type": "simpleai_puzzle", "heuristic": "both", **boards}
+        hmode = (match["hmode"] or "").casefold()
+        if "manhattan" in hmode:
+            heuristic = "manhattan"
+        elif "sai" in hmode:
+            heuristic = "misplaced"
+        else:
+            heuristic = "both"
+        return {"type": "simpleai_puzzle", "heuristic": heuristic, **boards}
+    if _NUT_TIM_KIEM.fullmatch(collapsed) and not any(
+        extra in collapsed.casefold() for extra in ("simpleai", "khong dung", "them phuong thuc", "ke thua")
+    ):
+        return {"type": "nut_tim_kiem"}
     if match := _SHIFTS.fullmatch(normalized):
         offsets = list(range(len(text) + 1))
         if len(text) != len(normalized):

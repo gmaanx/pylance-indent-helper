@@ -18,6 +18,7 @@ from .logic_kanren import LOGIC_KANREN_SKELETONS
 from .adversarial_game import ADVERSARIAL_GAME_SKELETONS
 from .slide_and_variants import SLIDE_AND_VARIANT_SKELETONS
 from .csp_logic_ml_variants import CSP_LOGIC_ML_VARIANT_SKELETONS
+from .knowledge_uncertainty_oop import KNOWLEDGE_UNCERTAINTY_OOP_SKELETONS
 
 ALL_SKELETONS: Dict[str, Dict[str, Any]] = {}
 for _group in (
@@ -29,6 +30,7 @@ for _group in (
     ADVERSARIAL_GAME_SKELETONS,
     SLIDE_AND_VARIANT_SKELETONS,
     CSP_LOGIC_ML_VARIANT_SKELETONS,
+    KNOWLEDGE_UNCERTAINTY_OOP_SKELETONS,
 ):
     ALL_SKELETONS.update(_group)
 
@@ -108,6 +110,19 @@ SYNONYM_MAP: Dict[str, List[str]] = {
     "nguoi du lich": ["tsp", "tspproblem"],
     "thap ha noi": ["hanoi", "thaphanoiproblem"],
     "class nut": ["raw_graph_search", "gamma", "fringe"],
+    "nuttimkiem": ["oop_search_node_nuttimkiem", "f_cost", "truy_vet_duong_di"],
+    "vector24": ["oop_vector24_cosine_plagiarism", "tich_vo_huong", "cosine"],
+    "dao van": ["oop_vector24_cosine_plagiarism", "do_tuong_dong_cosin", "khu_dau"],
+    "ontology": ["ontology_tbox_abox_simpleai", "tbox", "abox", "subclassof", "disjoint"],
+    "mang ngu nghia": ["ontology_tbox_abox_simpleai", "frame_inheritance_conflict"],
+    "he thong khung": ["frame_inheritance_conflict", "frame", "slots"],
+    "da ke thua": ["frame_inheritance_conflict", "frame", "override"],
+    "dinh ly bayes": ["prob_joint_conditional_bayes", "posterior", "prior", "likelihood"],
+    "xac suat co dieu kien": ["prob_joint_conditional_bayes", "conditional_probability"],
+    "mang bayes": ["prob_bayesian_network_cpt", "cpt", "enumeration_ask"],
+    "tap mo": ["fuzzy_sets_inference", "fuzzy", "lat_cat_alpha", "giai_mo_trong_tam"],
+    "lat cat alpha": ["fuzzy_sets_inference", "alpha_cut", "fuzzy"],
+    "giai mo": ["fuzzy_sets_inference", "centroid", "defuzzification"],
 }
 
 

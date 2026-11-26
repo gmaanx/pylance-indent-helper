@@ -11,10 +11,16 @@ Tiện ích Windows hỗ trợ luyện bài Python trong VS Code hoặc Antigrav
 
 ## Cài đặt offline
 
-1. Chuẩn bị Python 3.10 trở lên và VS Code hoặc Antigravity. Nếu vừa cài Python, mở lại PowerShell và kiểm tra bằng `py -3 --version` hoặc `python --version`. [Tải Python cho Windows](https://www.python.org/downloads/windows/)
-2. Giải nén gói cài Windows vào một thư mục có thể ghi. Nếu tải mã nguồn từ GitHub, chọn **Code → Download ZIP** rồi giải nén, hoặc dùng `git clone https://github.com/gmaanx/pylance-indent-helper.git`. Gói cài mang sẵn wheel cần thiết cho Offline.
-3. Nhấp đúp **setup_nhanh.bat**, hoặc mở PowerShell ngay trong thư mục chứa file và chạy lệnh bên dưới. [setup_nhanh.bat](setup_nhanh.bat)
-4. Khi cài xong, bấm **Ctrl+Shift+P → Reload Window** trong IDE đang mở để nạp extension. Nếu IDE đang đóng, mở nó sau khi cài.
+1. Tương thích từ **Python 3.8 đến Python 3.13** trên Windows (kể cả máy phòng Lab chạy Python 3.8/3.9 hoặc Anaconda) cùng VS Code hoặc Antigravity. Kiểm tra nhanh bằng `py -3 --version` hoặc `python --version`. [Tải Python cho Windows](https://www.python.org/downloads/windows/)
+2. Giải nén gói cài Windows vào một thư mục có thể ghi, hoặc kéo từ GitHub đầu giờ bằng `git clone https://github.com/gmaanx/pylance-indent-helper.git`. Gói cài đã kèm sẵn trọn bộ wheel offline (`simpleai`, `miniKanren`, `sympy`, `toolz`).
+3. **Cách cài đặt nhanh đầu giờ:**
+   - **Cài trọn gói 1 chạm cho Phòng Thi** (Full thư viện + Extension IDE + tự chọn model Ollama `3B`/`1.5B` theo RAM máy + nạp sẵn API Key mã hóa chạy ngầm không popup):
+     ```powershell
+     .\setup_phong_thi.bat --provider gemini --key AIzaSy...
+     ```
+     *(Nếu không truyền `--provider`/`--key`, script vẫn cài đầy đủ Offline + Extension + Ollama theo RAM).*
+   - Hoặc chỉ cài **Offline + API Cloud** siêu nhanh (< 10 giây, mặc định cài đủ `simpleai` + `miniKanren` + `sympy`): nhấp đúp [setup_nhanh.bat](setup_nhanh.bat).
+4. Khi cài xong, bấm **Ctrl+Shift+P → Reload Window** trong IDE đang mở để nạp extension (`v1.7.0`).
 
 ```powershell
 .\setup_nhanh.bat
@@ -36,9 +42,9 @@ Khi file cần SimpleAI mà Python đang chọn báo `ModuleNotFoundError`, lưu
 
 ## Dùng trong IDE
 
-1. Mở file `.py`, đặt đề trong dấu ba nháy `"""` rồi đặt con trỏ trong khối đề. Dùng cách này cho **Alt+1** đến **Alt+5**. Có thể bôi đen một đề để chỉ định vùng cần xử lý.
-2. Bấm **Alt+1** để chèn kết quả vào file đang mở. Ví dụ dưới đây tìm ba số nguyên tố đầu tiên. Dùng **Ctrl+Z** để hoàn tác. Nếu file hoặc vùng chọn thay đổi trong lúc xử lý, chạy lại lệnh trên nội dung mới.
-3. Lưu bằng **Ctrl+S**, rồi chọn **Bài tập Python: Chạy file đã lưu bằng Python của công cụ** trong **Ctrl+Shift+P** để xem kết quả ở Terminal. Cả 3 chế độ (**Offline**, **API Cloud – Alt+3**, và **Ollama – Alt+5**) đều tự sinh hàm `main()` / khối `if __name__ == "__main__":` gọi trực tiếp lời giải theo đề bài và in kết quả thực tế khi chạy: nếu đề quy định cách in hoặc định dạng đầu ra thì in theo đúng yêu cầu của đề, còn nếu không quy định thì tự dùng dữ liệu mẫu của đề (hoặc dữ liệu minh họa nhỏ hợp lệ) và in ra luôn (không dùng `input()` trừ khi đề yêu cầu nhập từ bàn phím).
+1. Hỗ trợ đủ **3 hình thức làm bài**: file `.py` trống (đặt đề trong `""" ... """` hoặc `# ...`), file `.py` khung có sẵn của giảng viên (`# TODO` / `pass` / `NotImplementedError` — giữ nguyên tên lớp/hàm), và **trực tiếp trong ô code Jupyter Notebook (`.ipynb`)**. Công cụ tự động đọc mẫu cấu trúc các file dữ liệu `.txt`, `.json`, `.csv` và module `.py` nằm cùng thư mục để viết code khớp dữ liệu ngay lần đầu.
+2. Đặt con trỏ vào khối đề rồi bấm **`Alt+2` (Auto-Pilot — khuyên dùng chính)**. Công cụ tự động chọn tầng mạnh nhất đang hoạt động (**Offline chuẩn → Cloud API chạy ngầm nếu còn mạng → Ollama cục bộ nếu mất mạng → Phôi Vàng BM25**), kèm 55 Phôi Vàng Chương 1–9 và tự chạy kiểm thử ngầm (`Shadow Run`) để bắt `Traceback` sửa lỗi trước khi chèn code sạch 100% (không chèn bất kỳ dòng comment đánh dấu nào của tool, không bật thông báo nổi dễ lộ).
+3. Bấm **`Alt+6`** để tự động lưu và chạy ngay file `.py` (hoặc chạy ô Notebook hiện tại) bằng đúng Python đã cài sẵn `simpleai`, `miniKanren`, `sympy` của công cụ. Cả 3 chế độ (**Offline**, **Cloud**, **Ollama**) đều tự sinh `def main():` + `if __name__ == "__main__": main()` gọi lời giải và in kết quả theo đúng định dạng đề bài.
 
 ```python
 """
@@ -46,16 +52,17 @@ Liệt kê 3 số nguyên tố đầu tiên.
 """
 ```
 
-Nếu file có nhiều đề, chọn từng khối bằng con trỏ hoặc vùng bôi đen. Công cụ thay đúng khối đang giải. Hai đề 8-puzzle và phân ca trực có thể thử trực tiếp từ file mẫu. [thu_nghiem.py](thu_nghiem.py)
+Nếu file có nhiều đề, chọn từng khối bằng con trỏ hoặc vùng bôi đen. Công cụ thay đúng khối đang giải. Các đề mẫu 8-Puzzle, phân ca trực CSP và lớp `NutTimKiem` có sẵn trong [thu_nghiem.py](thu_nghiem.py).
 
 | Phím | Lệnh |
 | --- | --- |
-| `Alt+1` | Giải offline từ yêu cầu hoặc dữ liệu có cấu trúc |
-| `Alt+2` | Phân tích offline |
-| `Alt+3` | Dùng API Cloud với key nhập trong phiên IDE |
-| `Alt+4` | Kiểm tra và sửa code offline |
-| `Alt+5` | Dùng model Ollama đã tải trên máy |
-| `Alt+0` | Mở xác nhận gỡ toàn bộ công cụ (Alt+1–5, Extension IDE & Ollama) |
+| `Alt+1` | Giải nhanh Offline chính xác (`< 0.1s`, 0% mạng) |
+| `Alt+2` | **Auto-Pilot 1 chạm** (Offline → Cloud ngầm → Ollama → Phôi Vàng BM25 + tự chạy ngầm sửa lỗi) |
+| `Alt+3` | Dùng API Cloud (chạy thẳng không popup nếu đã lưu key qua `nhap_api_key.bat`) |
+| `Alt+4` | **True Self-Fix**: chạy thử bắt `SyntaxError` / `Traceback` thực tế và tự vá code |
+| `Alt+5` | Dùng model Ollama trên máy (kèm Phôi Vàng BM25 + tự chạy ngầm sửa lỗi) |
+| `Alt+6` | Tự lưu & chạy ngay file `.py` / ô `.ipynb` bằng Python của công cụ |
+| `Alt+0` | Mở xác nhận gỡ toàn bộ công cụ (`Alt+1–6`, Extension IDE & Ollama) |
 
 Có thể tìm các lệnh trong **Ctrl+Shift+P**. Lệnh hủy hiện ở thông báo tiến độ khi đang xử lý. Bản cài dành cho IDE và các phím tạo code hoạt động khi đang soạn Python.
 
@@ -215,10 +222,12 @@ Cloud dùng tối đa hai lượt gọi cùng nhà cung cấp. Lượt sau rà b
 | OpenRouter | [OpenRouter Keys](https://openrouter.ai/settings/keys) |
 | OpenAI | [OpenAI Platform API Keys](https://platform.openai.com/api-keys) |
 
-Có thể thử một hãng từ terminal bằng lệnh dưới đây. Key chỉ dùng cho phép thử này. Dùng ô nhập trong IDE để chạy yêu cầu Cloud.
+Kiểm tra và lưu sẵn API key đã mã hóa (XOR + Base64) từ terminal trước giờ thi để bấm **Alt+2** hoặc **Alt+3** chạy ngầm hoàn toàn không hiện popup:
 
 ```powershell
-py -3 nhap_api_key.py --provider gemini
+.\nhap_api_key.bat --provider gemini --key AIzaSy...
+# Xóa key đã lưu bất kỳ lúc nào (hoặc bấm Alt+0 gỡ toàn bộ):
+.\nhap_api_key.bat --clear
 ```
 
 Nếu Cloud trả lỗi, kiểm tra mạng, key, quyền truy cập model và giới hạn tài khoản. Có thể đặt ID model tương thích trong `%LOCALAPPDATA%\Programs\PylanceHelper\models.json`, ví dụ `{"gemini_model":"ID_MODEL_CUA_BAN"}`. File này dùng cho tùy chọn model. Nhập key qua ô nhập của IDE hoặc terminal ở trên.

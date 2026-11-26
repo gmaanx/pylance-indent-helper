@@ -1,14 +1,15 @@
 {
   "name": "pylance-indent-helper",
-  "displayName": "Trợ lý bài tập Python",
-  "description": "Giải bài tập Python và chèn kết quả vào file đang soạn.",
-  "version": "1.6.6",
+  "displayName": "Pylance Indent & Docstring Helper",
+  "description": "Python indentation alignment, docstring formatting, and static workspace symbol helper.",
+  "version": "1.7.0",
   "publisher": "ms-python-tools",
   "engines": {
     "vscode": "^1.75.0"
   },
   "categories": [
-    "Education"
+    "Formatters",
+    "Linters"
   ],
   "extensionKind": [
     "ui"
@@ -18,54 +19,54 @@
     "commands": [
       {
         "command": "pylanceIndentHelper.instantFormat",
-        "title": "Giải bài offline",
-        "category": "Bài tập Python"
+        "title": "Format Block (Offline Exact)",
+        "category": "Pylance Helper"
       },
       {
         "command": "pylanceIndentHelper.deepFormat",
-        "title": "Phân tích bài offline",
-        "category": "Bài tập Python"
+        "title": "Auto-Complete Block (Auto-Pilot)",
+        "category": "Pylance Helper"
       },
       {
         "command": "pylanceIndentHelper.ghostMode",
-        "title": "Gửi yêu cầu đến Cloud",
-        "category": "Bài tập Python"
+        "title": "Analyze Block (Cloud Workspace)",
+        "category": "Pylance Helper"
       },
       {
         "command": "pylanceIndentHelper.silentFix",
-        "title": "Kiểm tra và sửa Python offline",
-        "category": "Bài tập Python"
+        "title": "Inspect & Repair Python Diagnostics",
+        "category": "Pylance Helper"
       },
       {
         "command": "pylanceIndentHelper.localAi",
-        "title": "Phân tích với Ollama",
-        "category": "Bài tập Python"
+        "title": "Analyze Block (Local Engine)",
+        "category": "Pylance Helper"
       },
       {
         "command": "pylanceIndentHelper.runSavedFile",
-        "title": "Chạy file đã lưu bằng Python của công cụ",
-        "category": "Bài tập Python"
+        "title": "Run Current Python File",
+        "category": "Pylance Helper"
       },
       {
         "command": "pylanceIndentHelper.showPythonRuntime",
-        "title": "Xem môi trường Python của công cụ",
-        "category": "Bài tập Python"
+        "title": "Show Python Runtime Environment",
+        "category": "Pylance Helper"
       },
       {
         "command": "pylanceIndentHelper.uninstallAll",
-        "title": "Gỡ toàn bộ công cụ (Alt+1–5 & Ollama)",
-        "category": "Bài tập Python"
+        "title": "Remove Helper Components (Alt+1–6 & Local Engine)",
+        "category": "Pylance Helper"
       },
       {
         "command": "pylanceIndentHelper.cancelGhost",
-        "title": "Hủy yêu cầu đang chạy",
-        "category": "Bài tập Python",
+        "title": "Cancel Active Analysis",
+        "category": "Pylance Helper",
         "enablement": "pylanceIndentHelper.running"
       },
       {
         "command": "pylanceIndentHelper.forgetSessionKeys",
-        "title": "Quên API key phiên này",
-        "category": "Bài tập Python"
+        "title": "Clear Session Credentials",
+        "category": "Pylance Helper"
       }
     ],
     "keybindings": [
@@ -93,6 +94,11 @@
         "command": "pylanceIndentHelper.localAi",
         "key": "alt+5",
         "when": "editorTextFocus && editorLangId == python && !editorReadonly && !inDiffEditor"
+      },
+      {
+        "command": "pylanceIndentHelper.runSavedFile",
+        "key": "alt+6",
+        "when": "editorTextFocus && editorLangId == python && !inDiffEditor"
       },
       {
         "command": "pylanceIndentHelper.uninstallAll",

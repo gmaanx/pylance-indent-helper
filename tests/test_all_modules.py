@@ -265,16 +265,11 @@ def test_triple_quotes_across_all_alt_modes() -> None:
         "Cho bài toán đong nước 3 bình (3, 5, 8), trạng thái đầu (0, 0, 8), đích cần đong được 4 lít.\n"
         '"""'
     )
-    for mode, expected_header in (
-        ("instant", "# [Alt+1 |"),
-        ("full", "# [Alt+2 |"),
-        ("ghost", "# [Alt+3 |"),
-        ("self_fix", "# [Alt+4 |"),
-    ):
+    for mode in ("instant", "full", "ghost", "self_fix"):
         res = process_request(triple_prompt, action_mode=mode, verify_shadow=True)
         assert res.verified_ok, f"Failed triple-quote on {mode}: {res.error_detail}"
         first_line = res.code.splitlines()[0]
-        assert first_line.startswith(expected_header), f"Expected {expected_header}, got {first_line}"
+        assert not first_line.startswith("# ["), f"Unexpected tool fingerprint header: {first_line}"
         assert res.tier_used == "offline_water_jugs"
         print(f"  [OK] {mode:<10} -> {res.tier_used} | {res.validation_status}")
 

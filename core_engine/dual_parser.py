@@ -132,6 +132,21 @@ BAI_ALIAS_TO_SKELETON = {
     "knn": "ml_classifiers_simpleai",
     "qlearning": "ml_reinforcement_simpleai",
     "rl": "ml_reinforcement_simpleai",
+    "ontology": "ontology_tbox_abox_simpleai",
+    "tbox": "ontology_tbox_abox_simpleai",
+    "frame": "frame_inheritance_conflict",
+    "khung": "frame_inheritance_conflict",
+    "backward": "logic_backward_chaining_hybrid",
+    "suy_dien_lui": "logic_backward_chaining_hybrid",
+    "bayes": "prob_joint_conditional_bayes",
+    "xac_suat": "prob_joint_conditional_bayes",
+    "mang_bayes": "prob_bayesian_network_cpt",
+    "cpt": "prob_bayesian_network_cpt",
+    "tap_mo": "fuzzy_sets_inference",
+    "fuzzy": "fuzzy_sets_inference",
+    "vector24": "oop_vector24_cosine_plagiarism",
+    "nut_tim_kiem": "oop_search_node_nuttimkiem",
+    "nuttimkiem": "oop_search_node_nuttimkiem",
 }
 
 

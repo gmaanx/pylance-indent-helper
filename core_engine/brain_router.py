@@ -8,8 +8,9 @@ from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .config_manager import CONFIG
-from .golden_skeletons import SIMPLEAI_STRICT_RULES, strip_accents
+from .golden_skeletons import RETRIEVER, SIMPLEAI_STRICT_RULES, strip_accents
 from .runnable_output import ensure_runnable_print, has_meaningful_runnable_main, prompt_forbids_print
+from .workspace_context import is_starter_template
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -91,11 +92,32 @@ def _runnable_output_guidance(user_prompt: str) -> str:
     )
 
 
+def select_relevant_skeletons(
+    query: str,
+    *,
+    top_k: int = 2,
+    min_score: float = 12.0,
+) -> List[Dict[str, Any]]:
+    if not query or not query.strip():
+        return []
+    folded = strip_accents(query).casefold()
+    if "khong dung simpleai" in folded or ("python thuan" in folded and "simpleai" not in folded and "kanren" not in folded):
+        candidates = RETRIEVER.retrieve(query, top_k=top_k * 2)
+        return [
+            item for item in candidates
+            if item.get("score", 0.0) >= min_score and "simpleai" not in item.get("code", "").lower()
+        ][:top_k]
+    candidates = RETRIEVER.retrieve(query, top_k=top_k)
+    return [item for item in candidates if item.get("score", 0.0) >= min_score]
+
+
 def build_context_injected_prompt(
     user_prompt: str,
     top_skeletons: List[Dict[str, Any]],
     existing_code: str = "",
     error_traceback: str = "",
+    *,
+    workspace_context: str = "",
 ) -> Tuple[str, str]:
     sections = [
         "Bạn là trợ lý viết chương trình Python. Hãy giữ nguyên toàn bộ dữ liệu, thuật toán, "
@@ -105,6 +127,12 @@ def build_context_injected_prompt(
         "Dùng thư viện chuẩn khi đề yêu cầu Python thuần hoặc không cần thư viện ngoài. "
         "Giữ đúng tên lớp, tên hàm, số chiều và chữ ký phương thức mà đề đã nêu."
     ]
+    if existing_code.strip() and is_starter_template(existing_code) and not error_traceback.strip():
+        sections.append(
+            "CHẾ ĐỘ ĐIỀN KHUYẾT KHUNG ĐỀ THI (# TODO / pass / NotImplementedError):\n"
+            "- Giữ nguyên 100% tên lớp, tên hàm, danh sách tham số và cấu trúc khung code giảng viên đã cho.\n"
+            "- Hoàn thiện đầy đủ tất cả các phần `# TODO`, `pass`, `...`, `NotImplementedError` theo đúng yêu cầu đề bài."
+        )
     if top_skeletons or _needs_ai_library_rules(f"{user_prompt}\n{existing_code}"):
         sections.append(SIMPLEAI_STRICT_RULES.strip())
     if top_skeletons:
@@ -112,6 +140,8 @@ def build_context_injected_prompt(
             f"Mẫu tham khảo {item['title']}\n{item['code']}" for item in top_skeletons[:2]
         )
         sections.append(examples)
+    if workspace_context and workspace_context.strip():
+        sections.append(workspace_context.strip())
     sections.append(_runnable_output_guidance(user_prompt))
     system_prompt = "\n\n".join(sections)
 
@@ -120,7 +150,8 @@ def build_context_injected_prompt(
         parts.append(f"Mã hiện tại:\n{existing_code}")
     if error_traceback.strip():
         parts.append(f"Chi tiết lỗi:\n{error_traceback}")
-    if not existing_code.strip() and not error_traceback.strip() and not prompt_forbids_print(user_prompt):
+    completing_template = bool(existing_code.strip()) and is_starter_template(existing_code) and not error_traceback.strip()
+    if (not existing_code.strip() or completing_template) and not error_traceback.strip() and not prompt_forbids_print(user_prompt):
         input_hint = "" if _prompt_requests_stdin(user_prompt) else " (gán sẵn dữ liệu mẫu, không dùng `input()`)"
         parts.append(
             f'Viết chương trình Python hoàn chỉnh gồm `def main():` gọi đúng hàm/lớp theo đề{input_hint}, '
@@ -280,11 +311,17 @@ def call_tier2_local_llm(
     best_skeleton: Optional[Dict[str, Any]],
     existing_code: str = "",
     *,
+    error_traceback: str = "",
+    workspace_context: str = "",
     diagnostics: Optional[List[str]] = None,
 ) -> Optional[Tuple[str, str]]:
     messages = diagnostics if diagnostics is not None else []
     system_prompt, user_msg = build_context_injected_prompt(
-        user_prompt, [best_skeleton] if best_skeleton else [], existing_code,
+        user_prompt,
+        [best_skeleton] if best_skeleton else [],
+        existing_code,
+        error_traceback=error_traceback,
+        workspace_context=workspace_context,
     )
     # Guard against silent prompt truncation on a small local model.
     if len(user_msg.encode("utf-8")) > 12_000:

@@ -13,6 +13,7 @@ INCLUDE = (
     "setup.py",
     "setup_nhanh.bat",
     "setup_ollama.bat",
+    "setup_phong_thi.bat",
     "go_cai_dat.py",
     "go_cai_dat.bat",
     "go_cai_dat.vbs",

@@ -4,6 +4,8 @@ Script dong goi truc tiep VS Code Extension thanh file `.vsix` chuan OpenVSIX
 chi bang thu vien chuan `zipfile` cua Python (khong can cai npm hay vsce!).
 """
 
+from __future__ import annotations
+
 import json
 import zipfile
 from pathlib import Path

@@ -22,12 +22,16 @@ function harness({
   baseEnabled = true,
   localModel = 'qwen2.5-coder:1.5b',
   legacyLocalModel,
-  missingUninstaller = false
+  missingUninstaller = false,
+  savedCredentials,
+  notebookCells,
+  saveResult
 } = {}) {
   const localAppData = path.resolve('test-profile');
   const engineRoot = path.join(localAppData, 'Programs', 'PylanceHelper');
   const cli = path.join(engineRoot, 'core_engine', 'cli_entry.py');
   const runtimePath = path.join(engineRoot, 'runtime.json');
+  const credPath = path.join(engineRoot, 'credentials.json');
   const localConfigPath = path.join(localAppData, 'PylanceHelperLocalAI', 'runtime.json');
   const marker = path.join(engineRoot, '.uninstalling');
   const python = path.join(engineRoot, '.venv', 'Scripts', 'python.exe');
@@ -35,6 +39,7 @@ function harness({
   const uninstallScript = path.join(engineRoot, 'go_cai_dat.py');
   const files = new Set([entry, cli, runtimePath, python, uninstallPython]);
   if (localModel) files.add(localConfigPath);
+  if (savedCredentials) files.add(credPath);
   if (!missingUninstaller) files.add(uninstallScript);
   if (scheme === 'file') files.add(fileName);
   const runtime = { engineRoot, python, uninstallPython, dependencyProfile, baseEnabled, localModel: legacyLocalModel };
@@ -69,6 +74,12 @@ function harness({
     positionAt: (offset) => offset,
     getText: () => contents
   };
+  if (saveResult !== undefined) {
+    document.save = async () => {
+      if (saveResult) document.isDirty = false;
+      return saveResult;
+    };
+  }
   const [start, end] = selected || [0, 0];
   const editor = {
     document,
@@ -94,7 +105,7 @@ function harness({
       }
     },
     EndOfLine: { CRLF: 2 },
-    ProgressLocation: { Notification: 1 },
+    ProgressLocation: { Notification: 1, Window: 10 },
     TaskScope: { Global: 1 },
     TaskRevealKind: { Always: 1 },
     Task: class Task {
@@ -109,7 +120,18 @@ function harness({
     },
     tasks: { executeTask: async (task) => { tasks.push(task); } },
     env: { clipboard: { writeText: async (value) => { clipboardWrites.push(value); } } },
-    workspace: { isTrusted },
+    workspace: {
+      isTrusted,
+      notebookDocuments: notebookCells ? [{
+        uri: uri('file', path.resolve('bai_thi.ipynb')),
+        getCells: () => [
+          ...notebookCells.map((c, idx) => ({
+            document: { uri: uri('vscode-notebook-cell', 'cell-' + idx), getText: () => c }
+          })),
+          { document }
+        ]
+      }] : []
+    },
     window: {
       activeTextEditor: noEditor ? undefined : editor,
       showInformationMessage: async (message, ...actions) => {
@@ -155,14 +177,16 @@ function harness({
     clearInterval: (callback) => timers.delete(callback),
     require(name) {
       if (name === 'vscode') return vscode;
+      if (name === 'node:buffer') return { Buffer };
       if (name === 'node:path') return path;
       if (name === 'node:os') return { tmpdir: () => path.resolve('test-temp') };
       if (name === 'node:fs') {
         return {
           existsSync: (file) => files.has(file),
           readFileSync(file) {
-            assert.ok([runtimePath, localConfigPath].includes(file));
+            assert.ok([runtimePath, localConfigPath, credPath].includes(file));
             if (!files.has(file)) throw new Error('missing runtime');
+            if (file === credPath) return JSON.stringify(savedCredentials);
             return JSON.stringify(file === runtimePath ? runtime : localConfig);
           }
         };
@@ -277,13 +301,20 @@ test('Alt+5 requests Ollama and inserts the result in the current editor', async
   const pending = h.run('localAi');
   await flush();
   assert.deepEqual(JSON.parse(h.children[0].input), {
-    text: '# Bài mẫu', mode: 'local', verify: true, allow_cloud: false, allow_local: true
+    text: '# Bài mẫu',
+    mode: 'local',
+    verify: true,
+    allow_cloud: false,
+    allow_local: true,
+    shadow_exec: true,
+    allow_rag_fallback: false,
+    file_path: h.document.fileName
   });
   assert.equal(h.prompts.length, 0);
   finish(h.children[0], 'print("Đáp án")', { tier_used: 'tier2_ollama', validation_status: 'syntax_checked' });
   await pending;
   assert.deepEqual(h.editorCommands, []);
-  assert.deepEqual(h.notices, [{ kind: 'status', message: 'Đã chèn mã · Ollama · Đã kiểm tra cú pháp' }]);
+  assert.deepEqual(h.notices, [{ kind: 'status', message: 'Pylance: Checked' }]);
   assert.equal(h.document.getText(), 'print("Đáp án")');
   assert.equal(h.edits.length, 1);
   assert.equal(h.tasks.length, 0);
@@ -354,7 +385,14 @@ test('offline selection is replaced directly, preserving surrounding text and un
   const pending = h.run('instantFormat');
   await flush();
   assert.deepEqual(JSON.parse(h.children[0].input), {
-    text: '# selected', mode: 'instant', verify: true, allow_cloud: false, allow_local: false
+    text: '# selected',
+    mode: 'instant',
+    verify: true,
+    allow_cloud: false,
+    allow_local: false,
+    shadow_exec: true,
+    allow_rag_fallback: false,
+    file_path: h.document.fileName
   });
   assert.equal(h.document.getText(), text);
   finish(h.children[0], 'x = 1\nprint(x)');
@@ -455,8 +493,15 @@ test('Cloud requires confirmation and sends only the chosen provider key in chil
   await flush();
   assert.equal(h.children.length, 1);
   assert.deepEqual(JSON.parse(h.children[0].input), {
-    text: '# Bài mẫu', mode: 'full', verify: true, allow_cloud: true, allow_local: false,
-    credentials: { groq: 'fixture-api-key' }
+    text: '# Bài mẫu',
+    mode: 'full',
+    verify: true,
+    allow_cloud: true,
+    allow_local: false,
+    shadow_exec: true,
+    allow_rag_fallback: false,
+    credentials: { groq: 'fixture-api-key' },
+    file_path: h.document.fileName
   });
   assert.ok(!h.children[0].args.join(' ').includes('fixture-api-key'));
   assert.ok(!JSON.stringify(h.children[0].options.env).includes('fixture-api-key'));
@@ -606,4 +651,61 @@ test('removing Ollama setup or switching models drops an active Ollama result', 
     await pending;
     assert.equal(h.edits.length, 0);
   }
+});
+
+test('Jupyter notebook cells (.ipynb) send preceding cell context and Alt+6 runs the cell', async () => {
+  const packageJson = require('../shells/vscode_ext/package.json');
+  assert.ok(packageJson.contributes.keybindings.some(({ command, key }) => command === 'pylanceIndentHelper.runSavedFile' && key === 'alt+6'));
+  const h = harness({
+    text: '# Giải tiếp trong ô này',
+    scheme: 'vscode-notebook-cell',
+    notebookCells: ['import math\nclass Base:\n    pass', '# Ô hướng dẫn']
+  });
+  const pending = h.run('deepFormat');
+  await flush();
+  const payload = JSON.parse(h.children[0].input);
+  assert.equal(payload.allow_local, true);
+  assert.equal(payload.allow_rag_fallback, true);
+  assert.equal(payload.file_path, path.resolve('bai_thi.ipynb'));
+  assert.match(payload.notebook_context, /class Base:/);
+  finish(h.children[0], 'print("notebook ok")');
+  await pending;
+  assert.equal(h.document.getText(), 'print("notebook ok")');
+
+  await h.run('runSavedFile');
+  assert.deepEqual(h.editorCommands, ['notebook.cell.execute']);
+});
+
+test('pre-saved encrypted credentials enable silent zero-popup Cloud and Auto-Pilot', async () => {
+  const mask = Buffer.from('PylanceIndentHelper_v2026_UEH_StealthKeyMask', 'utf8');
+  const plain = Buffer.from('AIzaSilentExamKey123', 'utf8');
+  const xored = Buffer.alloc(plain.length);
+  for (let i = 0; i < plain.length; i++) xored[i] = plain[i] ^ mask[i % mask.length];
+  const encoded = xored.toString('base64url');
+
+  const h = harness({
+    savedCredentials: { activeProvider: 'gemini', encoded: { gemini: encoded } }
+  });
+  const cloudReq = h.run('ghostMode');
+  await flush();
+  assert.equal(h.prompts.length, 0);
+  assert.equal(h.notices.length, 0);
+  assert.deepEqual(JSON.parse(h.children[0].input).credentials, { gemini: 'AIzaSilentExamKey123' });
+  finish(h.children[0], 'print(1)');
+  await cloudReq;
+
+  const autoReq = h.run('deepFormat');
+  await flush();
+  const autoPayload = JSON.parse(h.children[1].input);
+  assert.equal(autoPayload.allow_cloud, true);
+  assert.equal(autoPayload.allow_local, true);
+  assert.equal(autoPayload.allow_rag_fallback, true);
+  assert.deepEqual(autoPayload.credentials, { gemini: 'AIzaSilentExamKey123' });
+  finish(h.children[1], 'print(2)');
+  await autoReq;
+
+  // Dirty file with real save() auto-saves on Alt+6
+  const dirtySavable = harness({ isDirty: true, saveResult: true });
+  await dirtySavable.run('runSavedFile');
+  assert.equal(dirtySavable.tasks.length, 1);
 });

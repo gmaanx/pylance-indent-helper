@@ -1,6 +1,6 @@
 @echo off
 setlocal
-python "%~dp0nhap_api_key.py" %*
+call "%~dp0setup_lab\run_python.bat" "%~dp0nhap_api_key.py" %*
 set "API_TEST_EXIT=%ERRORLEVEL%"
-pause
+if "%~1"=="" pause
 exit /b %API_TEST_EXIT%

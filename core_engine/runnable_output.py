@@ -676,7 +676,7 @@ def _extract_literal_sample_call(prompt: str, funcs: Dict[str, ast.FunctionDef])
             except (SyntaxError, ValueError, RecursionError):
                 continue
             if isinstance(expr, ast.Call) and _call_matches_signature(expr, func_def):
-                return ast.unparse(expr)
+                return ast.unparse(expr) if hasattr(ast, "unparse") else snippet
     return None
 
 

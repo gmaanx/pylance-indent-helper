@@ -1,5 +1,7 @@
 """Check a provider's draft using a second, bounded review request."""
 
+from __future__ import annotations
+
 import ast
 import json
 import re
@@ -196,7 +198,7 @@ def review_cloud_draft(raw_request: str, draft: str, tier: str, diagnostics: lis
         _REVIEW_INSTRUCTIONS,
         json.dumps({"original_request": raw_request, "draft": draft, "syntax_issue": draft_issue}, ensure_ascii=False),
         diagnostics=diagnostics,
-        provider_id=tier.removeprefix("tier1_"),
+        provider_id=tier[6:] if tier.startswith("tier1_") else tier,
         max_attempts=1,
         raw_response=True,
     )

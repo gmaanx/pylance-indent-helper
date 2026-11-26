@@ -4,15 +4,15 @@ Mỗi dòng `# @solve` dưới đây là một bài độc lập. Bôi đen mộ
 
 | Nguồn đã đối chiếu | Nhóm bài trong tool |
 | --- | --- |
-| Buổi 1 và slide Python cơ bản | Hàm tính tổng chẵn/lẻ, generator Fibonacci, lớp Vector24 và Diem3D, phép toán vector, khử dấu và đếm ký tự để tính cosine |
+| Buổi 1 và slide Python cơ bản | Hàm tính tổng chẵn/lẻ, generator Fibonacci, lớp `Vector24`, `Diem3D`, `NutTimKiem`, phép toán vector, khử dấu và đếm ký tự để tính cosine |
 | Thư mục buổi 2 | Thư mục trống trong bản tài liệu hiện có |
 | Buổi 3 | Chưa tìm thấy thư mục. Phần tìm kiếm cơ bản lấy phạm vi từ slide Chương 3 |
 | Buổi 4 và Chương 3–4 | BFS/UCS/DFS/DLS/IDS/Greedy/A* theo dữ liệu khai báo, sinh xâu, 8-puzzle, đối chiếu số ô sai và Manhattan, vết hill climbing |
 | Buổi 5 và Chương 5 | N hậu, miền hữu hạn, tô màu với ràng buộc khác nhau, Sudoku, phép cộng chữ số, lập lịch, vết AC-3 |
-| Buổi 6, bài nhóm và Chương 6 | Truy vấn dữ kiện quan hệ, so khớp biểu thức, số nguyên tố, bảng chân lý, SAT, hợp giải, Horn tiến/lùi |
+| Buổi 6, bài nhóm và Chương 6 | Truy vấn dữ kiện quan hệ, so khớp biểu thức, số nguyên tố, bảng chân lý, SAT, hợp giải, Horn tiến/lùi (kể cả kết hợp `SearchProblem`) |
 | Chương 1–2 | Bốn cách tiếp cận AI, mô hình PEAS và kiểu tác tử. Bộ giải có ví dụ kế hoạch máy hút bụi và MDP hữu hạn |
-| Chương 8 | Kế thừa frame, giá trị mặc định và mâu thuẫn giữa hai nhánh |
-| Chương 9 | Bảng xác suất, xác suất có điều kiện, Bayes và phép toán tập mờ |
+| Chương 8 | Ontology thu gọn (`TBox`/`ABox`, `subClassOf`, `disjoint`, `domain`/`range`, kiểm chứng `SimpleAI`) và kế thừa frame đa nhánh |
+| Chương 9 | Bảng xác suất đồng thời/có điều kiện, Định lý Bayes, Mạng Bayes (`Enumeration-Ask`) và phép toán/giải mờ tập mờ |
 
 ## Bài yêu cầu dùng SimpleAI
 

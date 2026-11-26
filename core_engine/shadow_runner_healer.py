@@ -228,10 +228,25 @@ def static_auto_heal(code: str) -> str:
         healed_tree.body.insert(insert_pos, helper_node)
 
     ast.fix_missing_locations(healed_tree)
-    try:
-        return ast.unparse(healed_tree)
-    except Exception:
-        return code
+    if hasattr(ast, "unparse"):
+        try:
+            return ast.unparse(healed_tree)
+        except Exception:
+            return code
+    return _regex_heal_python38(code)
+
+
+def _regex_heal_python38(code: str) -> str:
+    """Fallback healer for Python 3.8 where ast.unparse is unavailable."""
+    import re
+    out = code
+    for alg in GRAPH_SEARCH_ALGOS:
+        out = re.sub(
+            rf"\b{alg}\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+            rf"{alg}(\1, graph_search=True)",
+            out,
+        )
+    return out
 
 
 def static_auto_heal_preserve_style(code: str) -> str:
@@ -321,9 +336,19 @@ def find_best_python_executable() -> str:
     return sys.executable
 
 
-def shadow_execute(code: str, timeout: float = 2.5) -> ShadowRunResult:
-    """Run trusted local test fixtures. This subprocess is not a sandbox."""
+def shadow_execute(
+    code: str,
+    timeout: float = 2.5,
+    *,
+    stdin_data: str = "5\n1 2 3 4 5\n1\n2\n3\n",
+    working_dir: Optional[str] = None,
+) -> ShadowRunResult:
+    """Run candidate or test code in a hidden subprocess with non-blocking sample stdin."""
     py_exe = find_best_python_executable()
+    run_cwd: Optional[str] = None
+    if working_dir and Path(working_dir).is_dir():
+        run_cwd = str(Path(working_dir).resolve())
+
     fd, tmp_path = tempfile.mkstemp(prefix="pylance_lint_", suffix=".py")
     os.close(fd)
 
@@ -336,18 +361,25 @@ def shadow_execute(code: str, timeout: float = 2.5) -> ShadowRunResult:
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
 
-    # Chi bo sung offline_pkgs vao PYTHONPATH neu dang chay tren Python he thong chua co .venv
+    python_paths: List[str] = []
+    if run_cwd:
+        python_paths.append(run_cwd)
     if ".venv" not in py_exe.lower():
         offline_site = Path(__file__).resolve().parents[1] / "setup_lab" / "offline_pkgs"
         if offline_site.exists():
-            cur_pp = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = f"{offline_site}{os.pathsep}{cur_pp}" if cur_pp else str(offline_site)
+            python_paths.append(str(offline_site))
+    if python_paths:
+        cur_pp = env.get("PYTHONPATH", "")
+        joined = os.pathsep.join(python_paths)
+        env["PYTHONPATH"] = f"{joined}{os.pathsep}{cur_pp}" if cur_pp else joined
 
     start_t = time.perf_counter()
     try:
         Path(tmp_path).write_text(code, encoding="utf-8")
         proc = subprocess.run(
             [py_exe, tmp_path],
+            input=stdin_data,
+            cwd=run_cwd,
             capture_output=True,
             text=True,
             encoding="utf-8",

@@ -300,11 +300,19 @@ class StealthDaemonApp:
                 if not raw_input.strip():
                     return
 
-                res = process_request(
-                    raw_text=raw_input,
-                    action_mode="full" if mode == "ghost" else mode,
-                    verify_shadow=True,
-                )
+                from core_engine.config_manager import load_encrypted_credentials, session_credentials
+                saved_creds = load_encrypted_credentials()
+                use_cloud = bool(saved_creds) and mode in ("full", "ghost", "self_fix")
+                with session_credentials(saved_creds if use_cloud else {}):
+                    res = process_request(
+                        raw_text=raw_input,
+                        action_mode="full" if mode == "ghost" else mode,
+                        verify_shadow=True,
+                        allow_cloud=use_cloud,
+                        allow_local=(mode != "instant"),
+                        allow_shadow_exec=True,
+                        allow_rag_fallback=(mode == "full"),
+                    )
                 if not res.code or self._stopping:
                     return
 

@@ -1,4 +1,6 @@
-"""Install Offline and API or Ollama integration for the current Windows user."""
+"""Install Offline, encrypted Cloud API key, and/or Ollama integration for the current Windows user."""
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -9,6 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from core_engine.config_manager import PROVIDERS, save_encrypted_credential
 from go_cai_dat import (
     _remove_tree,
     copy_runtime_files,
@@ -27,6 +30,7 @@ from setup_lab.local_ai import (
     install_local_ai,
     migrate_legacy_local_ai,
     normalize_model,
+    recommend_model_for_machine,
 )
 from shells.vscode_ext.pack_vsix import build_vsix
 
@@ -55,8 +59,8 @@ def find_ide_cli(ide: str) -> Path | None:
 
 
 def check_install(ide: str, ide_cli: Path | None, profile: str = "simpleai") -> tuple[Path | None, Path]:
-    if sys.platform != "win32" or sys.version_info < (3, 10):
-        raise RuntimeError("Can Windows va Python 3.10 tro len.")
+    if sys.platform != "win32" or sys.version_info < (3, 8):
+        raise RuntimeError("Can Windows va Python 3.8 tro len.")
     bootstrap = Path(sys._base_executable).resolve()
     if not bootstrap.is_file():
         raise RuntimeError(f"Khong tim thay Python goc: {bootstrap}")
@@ -109,9 +113,11 @@ def prepare_engine(runtime: Path, bootstrap: Path, profile: str = "simpleai") ->
     python = runtime / ".venv" / "Scripts" / "python.exe"
     run_python(bootstrap, "-m", "venv", str(runtime / ".venv"), cwd=runtime, timeout=120)
     print("Dang cai thu vien Python tu goi offline...", flush=True)
+    extra_pip_flags = ("--ignore-requires-python",) if sys.version_info < (3, 9) else ()
     run_python(
         python, "-m", "pip", "--isolated", "install",
         "--no-index", "--no-cache-dir", "--disable-pip-version-check",
+        *extra_pip_flags,
         "--find-links", str(WHEELS),
         *DEPENDENCIES[profile],
         cwd=runtime, timeout=180,
@@ -154,6 +160,9 @@ def install_all(
     local_model: str | None = None,
     *,
     wants_local: bool = False,
+    auto_model: bool = False,
+    api_provider: str | None = None,
+    api_key: str | None = None,
 ) -> None:
     root = install_root()
     with install_lock(root):
@@ -202,6 +211,9 @@ def install_all(
                 "manualExtension": ide_cli is None or previous.get("manualExtension", False),
             }
             save_runtime(root, config)
+            if api_provider and api_key:
+                save_encrypted_credential(api_provider, api_key, install_dir=root)
+                print(f"[OK] Da ma hoa va luu san API key ({api_provider}) cho che do chay ngam.", flush=True)
             installed = True
             (root / ".uninstalling").unlink(missing_ok=True)
         finally:
@@ -217,7 +229,10 @@ def install_all(
         print("Neu IDE dang mo, dung Reload Window de nap ban moi.")
         if wants_local or local_model is not None:
             try:
-                optional = install_local_ai(local_model)
+                if auto_model and local_model is None:
+                    optional = install_local_ai(None, auto_model=True)
+                else:
+                    optional = install_local_ai(local_model)
             except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 raise RuntimeError(f"Da cai tich hop IDE. Local AI chua san sang. {exc}") from exc
             print(f"[OK] Local AI san sang voi {optional['localModel']}.")
@@ -230,13 +245,21 @@ def main() -> int:
     parser.add_argument("--profile", choices=DEPENDENCIES, default="simpleai", help="simpleai gon nhe; full them miniKanren va SymPy.")
     parser.add_argument("--check", action="store_true", help="Kiem tra Python, goi offline va CLI.")
     component = parser.add_mutually_exclusive_group()
-    component.add_argument("--local", action="store_true", help="Cai Offline, API va Ollama (tuong thich lenh cu).")
+    component.add_argument("--local", action="store_true", help="Cai Offline, API va Ollama.")
     component.add_argument("--local-shell", action="store_true", help="Cai Ollama va tich hop Alt+5.")
     parser.add_argument("--local-model", help=f"Model Ollama dung voi --local-shell. Mac dinh {DEFAULT_MODEL}.")
+    parser.add_argument("--auto-model", action="store_true", help="Tu chon model Ollama theo dung luong RAM.")
+    parser.add_argument("--provider", choices=PROVIDERS, help="Nha cung cap Cloud luu san API key ma hoa.")
+    parser.add_argument("--key", help="API key luu ma hoa san cho Alt+2 / Alt+3.")
     args = parser.parse_args()
-    wants_local = args.local or args.local_shell
+    wants_local = getattr(args, "local", False) or getattr(args, "local_shell", False)
+    auto_model = getattr(args, "auto_model", False)
+    api_provider = getattr(args, "provider", None)
+    api_key = getattr(args, "key", None)
     if args.local_model is not None and not wants_local:
         parser.error("--local-model can dung cung --local-shell hoac --local.")
+    if bool(api_provider) != bool(api_key):
+        parser.error("--provider va --key can truyen cung nhau.")
     try:
         local_model = normalize_model(args.local_model) if args.local_model is not None else None
         profile = "local" if args.local_shell else args.profile
@@ -247,9 +270,16 @@ def main() -> int:
                 print(f"[OK] Goi offline ({profile}): {WHEELS}")
             print(f"[OK] IDE: {cli or 'Cai VSIX tu menu Extensions'}")
             if wants_local:
-                print(f"[OK] Local AI: {check_managed_local_ai(local_model)}")
+                target_model = local_model or (recommend_model_for_machine() if auto_model else None)
+                print(f"[OK] Local AI: {check_managed_local_ai(target_model)}")
         else:
-            install_all(cli, python, profile, local_model, wants_local=wants_local)
+            install_all(
+                cli, python, profile, local_model,
+                wants_local=wants_local,
+                auto_model=auto_model,
+                api_provider=api_provider,
+                api_key=api_key,
+            )
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"[LOI] Cai dat chua hoan tat. {exc}", file=sys.stderr)
         return 1
