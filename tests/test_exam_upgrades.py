@@ -23,6 +23,7 @@ from core_engine.config_manager import (
 from core_engine.contract_checker import check_api_contract, validate_shadow_output
 from core_engine.engine_pipeline import process_request
 from core_engine.golden_skeletons import ALL_SKELETONS
+from core_engine.semantic_verifier import verify_candidate_semantics
 from core_engine.workspace_context import collect_workspace_context, is_starter_template
 from setup_lab import local_ai
 
@@ -45,8 +46,10 @@ class ExamUpgradeTests(unittest.TestCase):
     def test_ram_aware_model_selection(self):
         with patch.object(local_ai, "detect_ram_gb", return_value=7.9):
             self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:1.5b")
-        with patch.object(local_ai, "detect_ram_gb", return_value=15.8):
+        with patch.object(local_ai, "detect_ram_gb", return_value=12.0):
             self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:3b")
+        with patch.object(local_ai, "detect_ram_gb", return_value=15.8):
+            self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:7b")
 
     def test_new_chapter_8_9_and_oop_skeletons_exist_and_retrieve(self):
         expected_ids = {
@@ -374,6 +377,194 @@ class ExamUpgradeTests(unittest.TestCase):
                 res_blk = process_request(block, action_mode="instant")
                 self.assertTrue(res_blk.verified_ok, f"Block {idx} failed: {res_blk.error_detail}")
                 self.assertEqual(res_blk.validation_status, "verified")
+
+    def test_semantic_verifier_catches_subtle_bugs_and_drives_closed_loop_repair(self):
+        # 1. Catches bool returned when `-> int` was requested
+        bool_instead_of_int = (
+            "def dem_vi_pham(x: int) -> int:\n    return True\n\n"
+            "def main():\n    print(dem_vi_pham(3))\n\n"
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        err_rt = verify_candidate_semantics(bool_instead_of_int, "Viết hàm dem_vi_pham(x: int) -> int")
+        self.assertIn("int", err_rt)
+        self.assertIn("bool", err_rt)
+
+        # 2. Catches single zero-vector ZeroDivisionError (`and` instead of `or`) even when main() passed!
+        buggy_cosine = (
+            "import math\n"
+            "def my_cos(v1: list[int], v2: list[int]) -> float:\n"
+            "    if sum(v1) == 0 and sum(v2) == 0:\n        return 0.0\n"
+            "    n1 = math.sqrt(sum(a*a for a in v1))\n"
+            "    n2 = math.sqrt(sum(b*b for b in v2))\n"
+            "    return sum(a*b for a, b in zip(v1, v2)) / (n1 * n2)\n\n"
+            "def main():\n    print(my_cos([1, 2], [2, 1]))\n\n"
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        fixed_cosine = buggy_cosine.replace(
+            "if sum(v1) == 0 and sum(v2) == 0:",
+            "if all(x == 0 for x in v1) or all(y == 0 for y in v2):",
+        )
+        err_zero = verify_candidate_semantics(
+            buggy_cosine,
+            "Viết hàm my_cos(v1: list[int], v2: list[int]) -> float, trả về 0.0 để không bị lỗi chia cho 0.",
+        )
+        self.assertIn("ZeroDivisionError", err_zero)
+
+        with patch.object(
+            brain_router,
+            "_post_json",
+            side_effect=[
+                {},
+                {"done": True, "response": buggy_cosine},
+                {},
+                {"done": True, "response": fixed_cosine},
+            ],
+        ) as post_mock:
+            repaired_res = process_request(
+                "# Viết hàm my_cos(v1: list[int], v2: list[int]) -> float tính cosine, trả về 0.0 để không chia cho 0.",
+                action_mode="local",
+                allow_local=True,
+                allow_shadow_exec=True,
+            )
+        self.assertEqual(post_mock.call_count, 4)
+        self.assertEqual(repaired_res.validation_status, "runtime_checked")
+        self.assertIn("or all", repaired_res.code)
+
+        # 3. Catches sink-vertex KeyError (`graph[curr]` instead of `graph.get(curr, [])`) & cyclic graph bugs
+        buggy_bfs = (
+            "from collections import deque\n"
+            "def tim_bfs(graph, start, goal):\n"
+            "    q = deque([(start, [start])])\n"
+            "    vis = {start}\n"
+            "    while q:\n"
+            "        u, p = q.popleft()\n"
+            "        if u == goal: return p\n"
+            "        for v in graph[u]:\n"
+            "            if v not in vis:\n"
+            "                vis.add(v)\n"
+            "                q.append((v, p + [v]))\n"
+            "    return None\n\n"
+            'def main():\n    print(tim_bfs({"A": ["B"], "B": []}, "A", "B"))\n\n'
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        err_sink = verify_candidate_semantics(buggy_bfs, "Viết hàm tim_bfs(graph, start, goal)")
+        self.assertIn("KeyError", err_sink)
+
+        # 4. Catches latent short-circuit KeyError on propositional `facts` when all facts are True
+        buggy_fc = (
+            "def suy_dien(facts: dict[str, bool]) -> dict[str, bool]:\n"
+            "    e = facts['A'] and facts['B']\n"
+            "    s = e and facts['S']\n"
+            "    return {'E': e, 'S': s}\n\n"
+            "def main():\n    print(suy_dien({'A': True, 'B': False}))\n\n"
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        err_fc = verify_candidate_semantics(buggy_fc, "Viết hàm suy_dien(facts: dict[str, bool]) -> dict[str, bool]")
+        self.assertIn("KeyError", err_fc)
+
+        # 5. Catches doctest/example mismatch, unfinished pass stub, and uncalled second function in main()
+        mismatch_code = (
+            "def gap_doi(x: int) -> int:\n    return x + 2\n\n"
+            "def main():\n    print(gap_doi(2))\n\n"
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        err_ex = verify_candidate_semantics(mismatch_code, "Viết hàm gap_doi(x: int) -> int. Ví dụ: gap_doi(5) -> 10")
+        self.assertIn("gap_doi(5)", err_ex)
+
+        uncalled_second = (
+            "def ham_mot(x):\n    return x + 1\n"
+            "def ham_hai(x):\n    return x * 2\n\n"
+            "def main():\n    print(ham_mot(3))\n\n"
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        err_uncalled = verify_candidate_semantics(
+            uncalled_second,
+            "Viết hàm ham_mot(x) và viết hàm ham_hai(x).",
+        )
+        self.assertIn("ham_hai", err_uncalled)
+
+    def test_tricky_exam_offline_solvers_pdf_quotes_and_todo_starter_templates(self):
+        # 1. Weighted graph UCS & A* with Word curly quotes “ ” and both tuple-list & nested-dict support
+        p_ucs_astar = (
+            'Bài 3.2: Tìm kiếm có trọng số trên đồ thị dict\n'
+            'Cho graph = {“A”: [(“B”, 2), (“C”, 5)], “B”: [(“C”, 1), (“D”, 4)], “C”: [(“D”, 1)], “D”: []} '
+            'và heuristic = {“A”: 4, “B”: 2, “C”: 1, “D”: 0}.\n'
+            'Viết hàm ucs(graph, start, goal) và hàm a_star(graph, start, goal, h) trả về tuple (duong_di, chi_phi).'
+        )
+        r_w = process_request(p_ucs_astar, action_mode="instant")
+        self.assertEqual(r_w.validation_status, "verified")
+        nsw = {"__name__": "tw"}
+        exec(compile(r_w.code, "<tw>", "exec"), nsw)
+        g_nested = {"A": {"B": 2, "C": 5}, "B": {"C": 1, "D": 4}, "C": {"D": 1}, "D": {}}
+        h_map = {"A": 4, "B": 2, "C": 1, "D": 0}
+        self.assertEqual(nsw["ucs"](g_nested, "A", "D"), (["A", "B", "C", "D"], 4.0))
+        self.assertEqual(nsw["a_star"](g_nested, "A", "D", h_map), (["A", "B", "C", "D"], 4.0))
+
+        # 2. Pure-Python 8-Puzzle functions (1D & 2D board support)
+        p_puz = (
+            "Bài 3.1: Cài đặt heuristic và A* cho 8-puzzle\n"
+            "Viết hàm so_o_sai(state, goal), hàm khoang_cach_manhattan(state, goal), "
+            "hàm sinh_trang_thai_ke(state) và hàm giai_8_puzzle(start, goal)."
+        )
+        r_puz = process_request(p_puz, action_mode="instant")
+        self.assertEqual(r_puz.validation_status, "verified")
+        nsp = {"__name__": "tp"}
+        exec(compile(r_puz.code, "<tp>", "exec"), nsp)
+        s_board = ((1, 2, 3), (4, 0, 6), (7, 5, 8))
+        g_board = ((1, 2, 3), (4, 5, 6), (7, 8, 0))
+        self.assertEqual(nsp["so_o_sai"](s_board, g_board), 2)
+        self.assertEqual(nsp["khoang_cach_manhattan"](s_board, g_board), 2)
+        self.assertEqual(len(nsp["giai_8_puzzle"](s_board, g_board)) - 1, 2)
+
+        # 3. Vietnamese text Jaccard & Levenshtein
+        p_text = (
+            "Bài 2.2: Xử lý chuỗi nâng cao\n"
+            "Viết hàm khu_dau_tieng_viet(text), hàm do_tuong_dong_jaccard(s1, s2) và hàm khoang_cach_levenshtein(s1, s2)."
+        )
+        r_txt = process_request(p_text, action_mode="instant")
+        self.assertEqual(r_txt.validation_status, "verified")
+        nst = {"__name__": "tt"}
+        exec(compile(r_txt.code, "<tt>", "exec"), nst)
+        self.assertEqual(nst["khu_dau_tieng_viet"]("Đặng Trí Tuệ"), "Dang Tri Tue")
+        self.assertEqual(nst["do_tuong_dong_jaccard"]("", ""), 0.0)
+        self.assertEqual(nst["khoang_cach_levenshtein"]("kitten", "sitting"), 3)
+
+        # 4. N-Queens conflict count & Hill Climbing
+        p_nq = (
+            "Bài 4.3: Bài toán N quân hậu\n"
+            "Viết hàm dem_cap_tan_cong(state) đếm số cặp quân hậu tấn công nhau và hàm hill_climbing_n_queens(n)."
+        )
+        r_nq = process_request(p_nq, action_mode="instant")
+        self.assertEqual(r_nq.validation_status, "verified")
+        nsq = {"__name__": "tq"}
+        exec(compile(r_nq.code, "<tq>", "exec"), nsq)
+        self.assertEqual(nsq["dem_cap_tan_cong"]([1, 3, 0, 2]), 0)
+        sol8 = nsq["hill_climbing_n_queens"](8)
+        self.assertEqual(nsq["dem_cap_tan_cong"](sol8), 0)
+
+        # 5. Entropy & Information Gain (ID3)
+        p_ig = (
+            "Bài 6.1: Cây quyết định ID3\n"
+            "Viết hàm tinh_entropy(labels) và hàm information_gain(parent_labels, subsets)."
+        )
+        r_ig = process_request(p_ig, action_mode="instant")
+        self.assertEqual(r_ig.validation_status, "verified")
+        nsi = {"__name__": "ti"}
+        exec(compile(r_ig.code, "<ti>", "exec"), nsi)
+        self.assertEqual(nsi["tinh_entropy"]([]), 0.0)
+        self.assertAlmostEqual(nsi["tinh_entropy"]([1, 1, 0, 0]), 1.0)
+        self.assertAlmostEqual(nsi["information_gain"]([1, 1, 0, 0], [[1, 1], [0, 0]]), 1.0)
+
+        # 6. Offline # TODO starter template completion on Alt+1 (< 0.05s)
+        starter_41 = (
+            '"""Bài 4.1: Cài đặt BFS và DFS trên đồ thị (dict)\n'
+            'Viết hàm bfs(graph, start, goal) và hàm dfs(graph, start, goal)."""\n\n'
+            "def bfs(graph, start, goal):\n    # TODO\n    pass\n\n"
+            "def dfs(graph, start, goal):\n    # TODO\n    pass\n"
+        )
+        r_todo = process_request(starter_41, action_mode="instant")
+        self.assertEqual(r_todo.validation_status, "verified")
+        self.assertIn("deque", r_todo.code)
 
 
 if __name__ == "__main__":

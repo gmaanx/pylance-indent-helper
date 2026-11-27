@@ -4,7 +4,7 @@ import ast
 import re
 
 from .golden_skeletons import strip_accents
-from .offline_exam_exercises import parse_exam_coding_exercise
+from .offline_exam_exercises import normalize_pdf_code_artifacts, parse_exam_coding_exercise
 from .offline_natural_vn import parse_natural_vietnamese_problem
 
 _BOARD_3 = r"\(\s*\(\s*[0-8]\s*,\s*[0-8]\s*,\s*[0-8]\s*\)\s*,\s*\(\s*[0-8]\s*,\s*[0-8]\s*,\s*[0-8]\s*\)\s*,\s*\(\s*[0-8]\s*,\s*[0-8]\s*,\s*[0-8]\s*\)\s*\)"
@@ -108,6 +108,7 @@ def _parse_shifts(match, original, offsets):
 
 
 def read_course_prompt(text):
+    text = normalize_pdf_code_artifacts(text)
     exam_ex = parse_exam_coding_exercise(text)
     if exam_ex is not None:
         return exam_ex

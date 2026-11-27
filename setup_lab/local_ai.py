@@ -22,6 +22,7 @@ from pathlib import Path
 
 DEFAULT_MODEL = "qwen2.5-coder:1.5b"
 BALANCED_MODEL = "qwen2.5-coder:3b"
+PRO_MODEL = "qwen2.5-coder:7b"
 OLLAMA_HOST = "127.0.0.1:11434"
 OLLAMA_PACKAGE = "Ollama.Ollama"
 LOCAL_AI_DIR = "PylanceHelperLocalAI"
@@ -56,7 +57,11 @@ def detect_ram_gb() -> float:
 
 def recommend_model_for_machine() -> str:
     ram_gb = detect_ram_gb()
-    return BALANCED_MODEL if ram_gb >= 12.0 else DEFAULT_MODEL
+    if ram_gb >= 14.5:
+        return PRO_MODEL
+    if ram_gb >= 10.0:
+        return BALANCED_MODEL
+    return DEFAULT_MODEL
 
 
 class _NoRedirects(urllib.request.HTTPRedirectHandler):

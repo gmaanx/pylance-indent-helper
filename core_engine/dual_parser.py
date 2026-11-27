@@ -171,7 +171,7 @@ _PROSE_HEADING = re.compile(
     r"^(?:bai\s+[0-9]+(?:\.[0-9]+)*\s*:|cau\s+[0-9]+\s*:|de bai\b|(?:viet|tao|cai dat)(?: mot)? (?:lop|ham)\b)"
 )
 _STANDALONE_QUOTED_BLOCK = re.compile(
-    r'^\s*(?P<q>"{3,}|\'{3,})(?P<body>[\s\S]*?)(?P=q)\s*$'
+    r'^\s*(?:[rRuU])?(?P<q>"{3,}|\'{3,})(?P<body>[\s\S]*?)(?P=q)\s*$'
 )
 _STANDALONE_SINGLE_QUOTED_PROSE = re.compile(
     r'^\s*(?P<q>"|\')(?P<body>(?:Bai|Bài|Cau|Câu|De bai|Đề bài)[\s\S]+)(?P=q)\s*$',
@@ -208,8 +208,10 @@ def _extract_comments_and_code(raw_text: str) -> Tuple[str, str]:
     descriptions: List[Tuple[int, str]] = []
     prompt_lines = set()
 
-    # A pasted request may start with prose and continue with comment bullets or embedded examples.
-    if lines and _PROSE_HEADING.match(strip_accents(lines[0].lstrip("\"' ")).casefold()):
+    # A pasted request may start with prose (not a triple-quoted docstring followed by starter code)
+    stripped_raw = raw_text.lstrip()
+    starts_with_triple = bool(re.match(r'^(?:[rRuU])?(?:"""|\'\'\')', stripped_raw))
+    if lines and not starts_with_triple and _PROSE_HEADING.match(strip_accents(lines[0].lstrip("\"' “”‘’")).casefold()):
         cleaned = raw_text.strip()
         if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
             cleaned = cleaned.strip("\"'").strip()
@@ -230,12 +232,13 @@ def _extract_comments_and_code(raw_text: str) -> Tuple[str, str]:
                 prompt_lines.add(row)
             elif (
                 kind == tokenize.STRING and column == 0 and bracket_depth == 0
-                and value.startswith(('"""', "'''"))
+                and value.lstrip("rRuU").startswith(('"""', "'''"))
                 and not lines[end_row - 1][end_column:].strip()
             ):
-                quote = value[:3]
-                if value.endswith(quote) and len(value) >= 6:
-                    descriptions.append((row, value[3:-3].strip()))
+                unprefixed = value.lstrip("rRuU")
+                quote = unprefixed[:3]
+                if unprefixed.endswith(quote) and len(unprefixed) >= 6:
+                    descriptions.append((row, unprefixed[3:-3].strip()))
                     prompt_lines.update(range(row, end_row + 1))
     except (tokenize.TokenError, IndentationError, SyntaxError):
         pass

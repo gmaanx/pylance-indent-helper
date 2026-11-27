@@ -231,7 +231,7 @@ function collectNotebookInfo(document) {
 }
 
 function findPromptBlocks(source) {
-  const tokens = /#[^\r\n]*|"{3,}|'{3,}|"|'|[()[\]{}]|\\\r?\n/g;
+  const tokens = /#[^\r\n]*|(?:[rRuU])?"{3,}|(?:[rRuU])?'{3,}|"|'|[()[\]{}]|\\\r?\n/g;
   const blocks = [];
   let depth = 0;
   let continued = false;
@@ -255,8 +255,9 @@ function findPromptBlocks(source) {
       depth = Math.max(0, depth - 1);
       continue;
     }
-    const baseDelim = token.length >= 3 ? token.slice(0, 3) : token;
-    const quoteCh = token[0];
+    const rawStripped = /^[rRuU]/.test(token) ? token.slice(1) : token;
+    const baseDelim = rawStripped.length >= 3 ? rawStripped.slice(0, 3) : rawStripped;
+    const quoteCh = rawStripped[0];
     let end = tokens.lastIndex;
     while (end < source.length && !source.startsWith(baseDelim, end)) {
       if (source[end] === '\\') {

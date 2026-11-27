@@ -731,3 +731,17 @@ test('all 6 practice blocks in thu_nghiem.py are cleanly isolated at cursor posi
     await req;
   }
 });
+
+test('raw docstring prompt blocks (r""" ... """) with LaTeX backslashes are isolated cleanly', async () => {
+  const first = 'r"""\nBài 4.2: $C \\land A \\rightarrow Q$\n"""';
+  const second = '"""\nBài khác\n"""';
+  const original = first + '\n\n' + second + '\n';
+  const cursor = original.indexOf('land');
+  const h = harness({ text: original, selected: [cursor, cursor] });
+  const req = h.run('instantFormat');
+  await flush();
+  assert.equal(JSON.parse(h.children[0].input).text, first);
+  finish(h.children[0], 'print("ok_raw")');
+  await req;
+  assert.equal(h.document.getText(), 'print("ok_raw")\n\n' + second + '\n');
+});

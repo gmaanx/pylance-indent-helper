@@ -11,6 +11,7 @@ from .brain_router import (
     build_context_injected_prompt,
     call_tier1_cloud_llm,
     call_tier2_local_llm,
+    review_local_draft,
     select_relevant_skeletons,
 )
 from .cloud_review import review_cloud_draft, syntax_error as _syntax_error
@@ -19,6 +20,7 @@ from .dual_parser import parse_user_input
 from .golden_skeletons import ALL_SKELETONS, customize_skeleton_with_prompt
 from .offline_solver import OfflineProblemError, solve_offline
 from .runnable_output import ensure_runnable_print
+from .semantic_verifier import verify_candidate_semantics
 from .shadow_runner_healer import shadow_execute, static_auto_heal, static_auto_heal_preserve_style
 from .workspace_context import collect_workspace_context, is_starter_template
 
@@ -139,28 +141,44 @@ def process_request(
             sem_err = validate_shadow_output(
                 cand_code, res.stdout, prompt_for_repair or raw_text, editing_existing=editing_existing,
             )
-            combined_err = "\n".join(x for x in (contract_err, sem_err) if x)
+            deep_err = verify_candidate_semantics(
+                cand_code,
+                prompt_for_repair or raw_text,
+                starter_for_contract,
+                editing_existing=editing_existing,
+                working_dir=working_dir,
+            )
+            combined_err = "\n".join(x for x in (contract_err, sem_err, deep_err) if x)
             if combined_err:
                 return False, bool(contract_err), res, combined_err
             return True, False, res, ""
 
-        # Closed-loop Shadow Run, API Contract & Semantic Output Auto-Heal (up to 2 repair rounds)
+        def _candidate_rank(passed: bool, c_err: bool, r_res, detail: str) -> tuple:
+            return (
+                1 if passed else 0,
+                1 if r_res.ok else 0,
+                0 if c_err else 1,
+                -len(detail or ""),
+            )
+
+        # Closed-loop Shadow Run, API Contract, Doctest & Adversarial Boundary Auto-Heal (up to 3 rounds)
         passed_all, has_contract_err, run_res, issue_detail = _evaluate_candidate(code)
         if not passed_all and not run_res.ok and not has_contract_err:
             aggressive = static_auto_heal(code)
             if aggressive != code and not _syntax_error(aggressive):
                 ok_agg, c_agg, retry_res, retry_issue = _evaluate_candidate(aggressive)
-                if ok_agg or retry_res.ok:
+                if _candidate_rank(ok_agg, c_agg, retry_res, retry_issue) > _candidate_rank(
+                    passed_all, has_contract_err, run_res, issue_detail
+                ):
                     code, passed_all, has_contract_err, run_res, issue_detail = (
                         aggressive, ok_agg, c_agg, retry_res, retry_issue,
                     )
 
         repair_prompt = prompt_for_repair or raw_text
         skels = skeletons_for_repair or []
-        for _round in range(2):
+        for _round in range(3):
             if passed_all:
                 break
-            # If the draft missed required class/function names completely, regenerate cleanly from starter_for_contract
             base_existing = starter_for_contract if (has_contract_err and not editing_existing) else code
             repaired_candidate = None
             if tier.startswith("tier1_") and allow_cloud:
@@ -184,7 +202,9 @@ def process_request(
                 break
             new_code, _ = _prepare_candidate_code(new_code, editing_existing=editing_existing)
             new_passed, new_c_err, new_run, new_issue = _evaluate_candidate(new_code)
-            if new_passed or (not new_c_err and has_contract_err) or (new_run.ok and not run_res.ok) or not run_res.ok:
+            if _candidate_rank(new_passed, new_c_err, new_run, new_issue) >= _candidate_rank(
+                passed_all, has_contract_err, run_res, issue_detail
+            ):
                 code, tier, passed_all, has_contract_err, run_res, issue_detail = (
                     new_code, new_tier, new_passed, new_c_err, new_run, new_issue,
                 )
@@ -241,6 +261,9 @@ def process_request(
         if candidate is None:
             error = diagnostics[-1] if diagnostics else "Ollama chưa tạo được đề xuất."
             return finish("unsupported", "tier2_ollama", error=error)
+        if allow_shadow_exec and verify_shadow and not editing_existing and best_skeleton is None:
+            cand_code, cand_tier = candidate
+            candidate = (review_local_draft(prompt_text, cand_code), cand_tier)
         return finish_model(
             candidate,
             editing_existing=editing_existing,
@@ -257,19 +280,21 @@ def process_request(
         )
 
     offline_error: Optional[OfflineProblemError] = None
-    if not parsed.existing_code:
+    if not parsed.existing_code or completing_template:
         try:
-            solution = solve_offline(parsed.prompt_text, parsed.target_skeleton_id)
+            solution = solve_offline(parsed.prompt_text or raw_text, parsed.target_skeleton_id)
         except OfflineProblemError as exc:
-            if parsed.mode in ("structured", "dsl") or exc.status in ("invalid", "limit"):
-                return finish(exc.status, "offline_solver", error=str(exc))
-            offline_error = exc
+            if not completing_template:
+                if parsed.mode in ("structured", "dsl") or exc.status in ("invalid", "limit"):
+                    return finish(exc.status, "offline_solver", error=str(exc))
+                offline_error = exc
         else:
             if solution is not None:
-                return finish(
-                    solution.validation_status, f"offline_{solution.problem_type}", solution.code,
-                    summary=solution.summary, notes=(solution.summary, *solution.diagnostics),
-                )
+                if not completing_template or check_api_contract(solution.code, raw_text, parsed.existing_code) == "":
+                    return finish(
+                        solution.validation_status, f"offline_{solution.problem_type}", solution.code,
+                        summary=solution.summary, notes=(solution.summary, *solution.diagnostics),
+                    )
 
     syntax_problem = _syntax_error(parsed.existing_code) if parsed.mode == "self_fix" else ""
     runtime_problem = ""
@@ -327,6 +352,9 @@ def process_request(
                     workspace_context=ws_context,
                     diagnostics=diagnostics,
                 )
+                if candidate is not None and allow_shadow_exec and verify_shadow and not editing_existing and not detected_issue and best_skeleton is None:
+                    cand_code, cand_tier = candidate
+                    candidate = (review_local_draft(model_prompt, cand_code), cand_tier)
             if candidate is not None:
                 return finish_model(
                     candidate,

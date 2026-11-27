@@ -177,12 +177,22 @@ def build_context_injected_prompt(
     workspace_context: str = "",
 ) -> Tuple[str, str]:
     sections = [
-        "Bạn là trợ lý viết chương trình Python. Hãy giữ nguyên toàn bộ dữ liệu, thuật toán, "
-        "định dạng đầu ra và các ràng buộc nêu trong yêu cầu. Nếu dùng mẫu tham khảo, bỏ dữ liệu "
-        "ví dụ và thay bằng dữ liệu của yêu cầu. Tránh giả định làm thay đổi bài toán. "
-        "Xử lý dữ liệu thiếu hoặc không có nghiệm rõ ràng. Chỉ trả về mã Python. "
-        "Dùng thư viện chuẩn khi đề yêu cầu Python thuần hoặc không cần thư viện ngoài. "
-        "Giữ đúng tên lớp, tên hàm, số chiều và chữ ký phương thức mà đề đã nêu."
+        "Bạn là chuyên gia giải thuật & lập trình Python đạt độ chính xác tuyệt đối. "
+        "Hãy giữ nguyên toàn bộ dữ liệu, thuật toán, định dạng đầu ra và mọi ràng buộc phụ trong yêu cầu. "
+        "Nếu dùng mẫu tham khảo, bỏ dữ liệu ví dụ và thay bằng đúng dữ liệu của yêu cầu. "
+        "Chỉ trả về mã Python hoàn chỉnh (không viết văn bản giải thích ngoài khối mã).\n"
+        "QUY TRÌNH TƯ DUY TRƯỚC KHI VIẾT HÀM (BẮT BUỘC):\n"
+        "- Ngay đầu file Python, hãy viết 4–6 dòng comment `#` phân tích ngắn gọn: "
+        "(1) Trạng thái bài toán gồm những biến nào (vd `(r, c, pin)` kèm vết `path`), "
+        "(2) Thứ tự cập nhật biến ở mỗi bước chuyển trạng thái đúng từng chữ trong đề, "
+        "(3) Điều kiện hợp lệ / điều kiện sạc hoặc ràng buộc phụ / cấu trúc `visited` tối ưu, "
+        "(4) Kiểu dữ liệu trả về chính xác khi tìm thấy nghiệm và khi vô nghiệm.\n"
+        "5 NGUYÊN TẮC BẮT BUỘC ĐỂ KHÔNG MẮC LỖI:\n"
+        "1. Đúng 100% tên lớp, tên hàm, thứ tự tham số, giá trị mặc định và kiểu trả về (`-> int` không trả `bool`; bài tìm đường `-> list` phải lưu vết đầy đủ `[start, ..., goal]`, không trả 1 đỉnh cuối; trả `None` khi vô nghiệm nếu đề yêu cầu).\n"
+        "2. Không làm biến đổi trực tiếp (`pop`, `clear`, gán đè) lên `dict`/`list`/`set` đầu vào của người gọi trừ khi đề yêu cầu sửa tại chỗ.\n"
+        "3. Xử lý chặt mọi biên: dữ liệu rỗng, `start == goal`, đỉnh lá không có trong khóa `dict` (`graph.get(u, [])`), chu trình (`visited` hoặc `best_state`), mẫu số bằng 0 (`norm1 == 0 or norm2 == 0`).\n"
+        "4. Khi dùng `heapq` cho UCS / Greedy / A*, luôn kèm bộ đếm `counter = itertools.count()` ở phần tử thứ 2 `(priority, next(counter), state, ...)` để không bao giờ lỗi `TypeError: '<' not supported` khi bằng chi phí.\n"
+        "5. Cài đặt đầy đủ mọi hàm/phương thức (tuyệt đối không để `pass` / `TODO`), trong `main()` tạo ví dụ có nghiệm thực tế để kiểm chứng và tương thích Python 3.8+."
     ]
     domain_hints = _pure_python_domain_hints(user_prompt)
     if domain_hints:
@@ -347,7 +357,7 @@ def _repair_ollama_main(model: str, user_prompt: str, draft_code: str, timeout: 
         "system": repair_system,
         "prompt": repair_prompt,
         "stream": False,
-        "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 2048},
+        "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 3072},
     }
     try:
         body = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/generate", payload, timeout)
@@ -365,6 +375,54 @@ def _repair_ollama_main(model: str, user_prompt: str, draft_code: str, timeout: 
     if has_meaningful_runnable_main(candidate, user_prompt):
         return candidate
     return None
+
+
+def review_local_draft(user_prompt: str, draft_code: str) -> str:
+    """Run a bounded self-critique pass on Ollama for complex multi-constraint prompts."""
+    if not draft_code or len(user_prompt.strip()) < 220 or "\n" not in user_prompt.strip():
+        return draft_code
+    model = CONFIG.get("local_model")
+    if not isinstance(model, str) or not model.strip():
+        return draft_code
+    timeout = float(CONFIG.get("local_timeout", 90.0))
+    audit_system = (
+        "Bạn là giám khảo chấm thi thuật toán Python cực kỳ khắt khe. "
+        "Hãy đối chiếu từng câu, từng điều kiện biên và công thức cập nhật trạng thái trong Đề bài với Bản nháp Python:\n"
+        "1. Có bỏ sót vật cản / điều kiện cấm / điều kiện dừng nào trong đề không?\n"
+        "2. Thứ tự cộng/trừ/nạp lại biến trạng thái đã đúng 100% từng chữ trong đề chưa?\n"
+        "3. Cấu trúc `visited` đã xét đúng trạng thái mở rộng (ví dụ lưu mức năng lượng tốt nhất tại mỗi ô thay vì chỉ đánh dấu tọa độ `(x, y)` đơn thuần nếu đề cho phép quay lại khi nhiều pin hơn) chưa?\n"
+        "4. Kiểu trả về, tên hàm, tham số và hàm `main()` đã đầy đủ chưa?\n"
+        "Nếu bản nháp đã ĐÚNG TUYỆT ĐỐI 100%, chỉ trả về đúng từ: KEEP\n"
+        "Nếu có BẤT KỲ sai sót hay thiếu sót nào, hãy trả về TOÀN BỘ mã Python hoàn chỉnh đã sửa đúng 100% trong khối ```python ... ```."
+    )
+    audit_prompt = (
+        f"Đề bài gốc:\n{user_prompt}\n\n"
+        f"Bản nháp Python cần rà soát:\n```python\n{draft_code}\n```\n"
+    )
+    payload = {
+        "model": model,
+        "system": audit_system,
+        "prompt": audit_prompt,
+        "stream": False,
+        "options": {"temperature": 0.05, "num_ctx": 8192, "num_predict": 3072},
+    }
+    try:
+        body = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/generate", payload, timeout)
+    except Exception:
+        return draft_code
+    if not isinstance(body, dict) or body.get("done") is not True or body.get("done_reason") in ("length", "load"):
+        return draft_code
+    raw_resp = (body.get("response") or "").strip()
+    if not raw_resp or raw_resp.upper() == "KEEP":
+        return draft_code
+    revised = extract_python_code(raw_resp)
+    if not revised or revised.upper() == "KEEP":
+        return draft_code
+    try:
+        compile(revised, "<local-audit>", "exec")
+    except Exception:
+        return draft_code
+    return revised
 
 
 def call_tier2_local_llm(
@@ -399,7 +457,7 @@ def call_tier2_local_llm(
         "system": system_prompt,
         "prompt": user_msg,
         "stream": False,
-        "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 2048},
+        "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 3072},
     }
     try:
         details = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/show", {"model": model}, 5.0)

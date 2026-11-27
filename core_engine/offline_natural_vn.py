@@ -12,6 +12,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from .golden_skeletons import strip_accents
+from .offline_exam_exercises import normalize_pdf_code_artifacts
 
 _CRYPT_RE = re.compile(
     r"^\s*(?:cau\s+\d+\s*:\s*)?(?:giai\s+)?(?:bai\s+toan\s+)?(?:mat\s+ma\s+(?:chu\s+so|so\s+hoc)|cryptarithmetic)"
@@ -60,7 +61,7 @@ def _safe_eval(snippet: str) -> Any:
 
 
 def parse_natural_vietnamese_problem(raw_text: str) -> Optional[Dict[str, Any]]:
-    text = raw_text.strip()
+    text = normalize_pdf_code_artifacts(raw_text).strip()
     if not text:
         return None
     folded = strip_accents(text)
