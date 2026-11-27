@@ -12,6 +12,7 @@ import ast
 import json
 import os
 import re
+import warnings
 from pathlib import Path
 from typing import List, Optional
 
@@ -29,7 +30,9 @@ def is_starter_template(code: str) -> bool:
     if re.search(r"#\s*(?:TODO|FIXME|YOUR CODE HERE|VIET CODE|DIEN CODE|CAU\s+\d+)", code, re.IGNORECASE):
         return True
     try:
-        tree = ast.parse(code)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(code)
     except (SyntaxError, ValueError, RecursionError):
         return False
 
@@ -78,7 +81,9 @@ def _summarize_json(raw_text: str) -> str:
 
 def _summarize_python_module(path: Path, raw_text: str) -> str:
     try:
-        tree = ast.parse(raw_text)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(raw_text)
     except (SyntaxError, ValueError, RecursionError):
         return ""
     items: List[str] = []

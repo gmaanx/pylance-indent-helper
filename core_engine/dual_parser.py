@@ -12,6 +12,7 @@ import ast
 import io
 import re
 import tokenize
+import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -166,7 +167,16 @@ _IGNORED_COMMENT_PREFIXES = (
     "[alt+",
     "[dang ",
 )
-_PROSE_HEADING = re.compile(r"^(?:bai\s+[0-9]+(?:\.[0-9]+)*\s*:|de bai\b|(?:viet|tao)(?: mot)? lop\b)")
+_PROSE_HEADING = re.compile(
+    r"^(?:bai\s+[0-9]+(?:\.[0-9]+)*\s*:|cau\s+[0-9]+\s*:|de bai\b|(?:viet|tao|cai dat)(?: mot)? (?:lop|ham)\b)"
+)
+_STANDALONE_QUOTED_BLOCK = re.compile(
+    r'^\s*(?P<q>"{3,}|\'{3,})(?P<body>[\s\S]*?)(?P=q)\s*$'
+)
+_STANDALONE_SINGLE_QUOTED_PROSE = re.compile(
+    r'^\s*(?P<q>"|\')(?P<body>(?:Bai|Bài|Cau|Câu|De bai|Đề bài)[\s\S]+)(?P=q)\s*$',
+    re.IGNORECASE,
+)
 
 
 def _is_system_status_comment(line_content: str) -> bool:
@@ -178,16 +188,32 @@ def _is_system_status_comment(line_content: str) -> bool:
 
 def _extract_comments_and_code(raw_text: str) -> Tuple[str, str]:
     """Extract comment or standalone quoted requests without stripping code strings."""
-    lines = raw_text.splitlines()
-    descriptions: List[Tuple[int, str]] = []
-    prompt_lines = set()
     if re.match(r"^@solve\b", raw_text, re.IGNORECASE):
         return raw_text, ""
 
-    # A pasted request may start with prose and continue with comment bullets.
-    # Keep the original ordering in that case so every requirement is matched.
-    if _PROSE_HEADING.match(strip_accents(lines[0]).casefold()):
-        return "\n".join(line.lstrip().lstrip("#").strip() for line in lines).strip(), ""
+    # Handle standalone 3+-quote blocks (including accidental 4-quote """" ... """") directly
+    m_multi = _STANDALONE_QUOTED_BLOCK.match(raw_text)
+    if m_multi:
+        inner = m_multi.group("body")
+        # Ensure there wasn't a closing delimiter followed by real Python code in the middle
+        q = m_multi.group("q")[:3]
+        if q not in inner:
+            return inner.strip(), ""
+
+    m_single = _STANDALONE_SINGLE_QUOTED_PROSE.match(raw_text)
+    if m_single:
+        return m_single.group("body").strip(), ""
+
+    lines = raw_text.splitlines()
+    descriptions: List[Tuple[int, str]] = []
+    prompt_lines = set()
+
+    # A pasted request may start with prose and continue with comment bullets or embedded examples.
+    if lines and _PROSE_HEADING.match(strip_accents(lines[0].lstrip("\"' ")).casefold()):
+        cleaned = raw_text.strip()
+        if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+            cleaned = cleaned.strip("\"'").strip()
+        return "\n".join(line.lstrip("#").rstrip() if line.lstrip().startswith("#") else line for line in cleaned.splitlines()).strip(), ""
 
     try:
         bracket_depth = 0
@@ -212,16 +238,17 @@ def _extract_comments_and_code(raw_text: str) -> Tuple[str, str]:
                     descriptions.append((row, value[3:-3].strip()))
                     prompt_lines.update(range(row, end_row + 1))
     except (tokenize.TokenError, IndentationError, SyntaxError):
-        # Keep unparsed source intact for the syntax checker or the model.
         pass
 
     prompt = "\n".join(text for _, text in sorted(descriptions)).strip()
     existing_code = "\n".join(line for row, line in enumerate(lines, 1) if row not in prompt_lines).strip()
     if not prompt and existing_code:
         try:
-            ast.parse(existing_code)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                ast.parse(existing_code)
         except (SyntaxError, ValueError, RecursionError):
-            return existing_code, ""
+            return existing_code.strip("\"'").strip(), ""
     return prompt, existing_code
 
 

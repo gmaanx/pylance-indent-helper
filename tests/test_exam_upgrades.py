@@ -289,6 +289,92 @@ class ExamUpgradeTests(unittest.TestCase):
             self.assertFalse((local_dir / "PylanceHelperLocalAI").exists())
             self.assertFalse((home_dir / ".ollama").exists())
 
+    def test_bai_2_1_4_1_4_2_and_four_quote_prompts_verify_and_execute_accurately(self):
+        # 1. Bai 2.1 with 4 quotes """" ... """" and LaTeX escapes
+        p_2_1 = (
+            '""""\n'
+            'Bài 2.1: Vector hóa nguyên âm & Khoảng cách / Độ tương đồng\n'
+            'Cho một chuỗi văn bản tiếng Anh:\n'
+            'Viết hàm vector_nguyen_am(text: str) -> list[int] đếm tần suất xuất hiện của 5 nguyên âm "aeiou" '
+            '(không phân biệt chữ hoa/chữ thường nhờ .lower()), trả về danh sách gồm 5 số nguyên theo đúng thứ tự '
+            "'a', 'e', 'i', 'o', 'u'.\n"
+            'Viết hàm do_tuong_dong_cosine(v1: list[int], v2: list[int]) -> float tính độ tương đồng Cosine giữa hai vector cùng độ dài:\n'
+            r'$$\text{sim}(v_1, v_2) = \frac{\sum v_{1,k} v_{2,k}}{\sqrt{\sum v_{1,k}^2} \cdot \sqrt{\sum v_{2,k}^2}}$$' + '\n'
+            'Lưu ý biên: nếu một trong hai vector có chuẩn/độ dài bằng 0 (ví dụ chuỗi không có nguyên âm nào), '
+            'trả về 0.0 để không bị lỗi chia cho 0.\n'
+            '""""'
+        )
+        r21 = process_request(p_2_1, action_mode="instant")
+        self.assertEqual(r21.validation_status, "verified")
+        ns21 = {"__name__": "t21"}
+        exec(compile(r21.code, "<t21>", "exec"), ns21)
+        self.assertEqual(ns21["vector_nguyen_am"]("AeIoU aAA"), [4, 1, 1, 1, 1])
+        self.assertEqual(ns21["do_tuong_dong_cosine"]([1, 2, 0, 0, 1], [0, 0, 0, 0, 0]), 0.0)
+        self.assertAlmostEqual(ns21["do_tuong_dong_cosine"]([1, 2, 3, 0, 1], [1, 2, 3, 0, 1]), 1.0)
+
+        # 2. Bai 4.1: BFS & DFS on dict
+        p_4_1 = (
+            'Bài 4.1: Cài đặt BFS và DFS trên đồ thị (dict)\n'
+            'Cho đồ thị có hướng/vô hướng biểu diễn bằng từ điển (dict), ví dụ:\n'
+            'graph = {"A": ["B", "C"], "B": ["D", "E"], "C": ["F"], "D": [], "E": ["F"], "F": []}\n'
+            'Viết hàm bfs(graph, start, goal) sử dụng hàng đợi FIFO và tập visited để tìm đường đi từ start đến goal.\n'
+            'Viết hàm dfs(graph, start, goal) sử dụng ngăn xếp LIFO để tìm đường đi từ start đến goal.'
+        )
+        r41 = process_request(p_4_1, action_mode="instant")
+        self.assertEqual(r41.validation_status, "verified")
+        ns41 = {"__name__": "t41"}
+        exec(compile(r41.code, "<t41>", "exec"), ns41)
+        g = {"A": ["B", "C"], "B": ["D", "E"], "C": ["F"], "D": [], "E": ["F"], "F": []}
+        self.assertEqual(ns41["bfs"](g, "A", "F"), ["A", "C", "F"])
+        self.assertEqual(ns41["dfs"](g, "A", "F"), ["A", "B", "E", "F"])
+        self.assertIsNone(ns41["bfs"](g, "D", "A"))
+        self.assertIsNone(ns41["dfs"](g, "D", "A"))
+
+        # 3. Bai 4.2: Forward chaining & CNF violated clause counter
+        p_4_2 = (
+            'Bài 4.2: Kiểm tra ràng buộc / Suy diễn logic mệnh đề đơn giản\n'
+            'facts = {"C": True, "A": True, "R": True, "I": False, "D": True}\n'
+            r'$C \land A \rightarrow Q$' + '\n'
+            r'$R \land I \rightarrow H$' + '\n'
+            r'$Q \land H \land D \rightarrow E$' + '\n'
+            r'$E \rightarrow S$' + '\n'
+            'Viết hàm suy_dien_tien(facts: dict[str, bool]) -> dict[str, bool] suy ra giá trị của Q, H, E, S.\n'
+            'Viết hàm dem_rang_buoc_vi_pham(assignment: dict[str, bool], clauses: list[list[tuple[str, bool]]]) -> int '
+            'đếm xem có bao nhiêu mệnh đề không được thỏa mãn.'
+        )
+        r42 = process_request(p_4_2, action_mode="instant")
+        self.assertEqual(r42.validation_status, "verified")
+        ns42 = {"__name__": "t42"}
+        exec(compile(r42.code, "<t42>", "exec"), ns42)
+        out_f = ns42["suy_dien_tien"]({"C": True, "A": True, "R": True, "I": False, "D": True})
+        self.assertEqual((out_f["Q"], out_f["H"], out_f["E"], out_f["S"]), (True, False, False, False))
+        out_t = ns42["suy_dien_tien"]({"C": True, "A": True, "R": True, "I": True, "D": True})
+        self.assertEqual((out_t["Q"], out_t["H"], out_t["E"], out_t["S"]), (True, True, True, True))
+        self.assertEqual(
+            ns42["dem_rang_buoc_vi_pham"](
+                {"A": True, "B": False},
+                [[("A", True)], [("A", False), ("B", True)], [("B", True)]],
+            ),
+            2,
+        )
+
+        # 4. Skeleton de-poisoning: Vector24 & 2-arg Nut BFS must NOT pollute custom pure-Python APIs
+        skels_21 = brain_router.select_relevant_skeletons(p_2_1, top_k=2, for_local_model=True)
+        self.assertFalse(any(s["id"] == "oop_vector24_cosine_plagiarism" for s in skels_21))
+        skels_41 = brain_router.select_relevant_skeletons(p_4_1, top_k=2, for_local_model=True)
+        self.assertFalse(any(s["id"] == "raw_graph_search" for s in skels_41))
+
+        # 5. Every single exercise block in thu_nghiem.py solves offline with verified_ok=True
+        import re as _re
+        thu_nghiem_path = Path(__file__).resolve().parents[1] / "thu_nghiem.py"
+        blocks = _re.findall(r'"""[\s\S]*?"""', thu_nghiem_path.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(blocks), 6)
+        for idx, block in enumerate(blocks, start=1):
+            with self.subTest(block_index=idx):
+                res_blk = process_request(block, action_mode="instant")
+                self.assertTrue(res_blk.verified_ok, f"Block {idx} failed: {res_blk.error_detail}")
+                self.assertEqual(res_blk.validation_status, "verified")
+
 
 if __name__ == "__main__":
     unittest.main()

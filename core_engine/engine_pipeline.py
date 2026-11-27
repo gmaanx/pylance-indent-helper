@@ -133,35 +133,40 @@ def process_request(
             )
             res = shadow_execute(cand_code, timeout=3.5, working_dir=working_dir)
             if not res.ok:
-                return False, res, (res.stderr or res.stdout or "Lỗi khi chạy thử mã Python.")[-1800:]
+                tb = (res.stderr or res.stdout or "Lỗi khi chạy thử mã Python.")[-1800:]
+                full_err = f"{contract_err}\n{tb}".strip() if contract_err else tb
+                return False, bool(contract_err), res, full_err
             sem_err = validate_shadow_output(
                 cand_code, res.stdout, prompt_for_repair or raw_text, editing_existing=editing_existing,
             )
             combined_err = "\n".join(x for x in (contract_err, sem_err) if x)
             if combined_err:
-                return False, res, combined_err
-            return True, res, ""
+                return False, bool(contract_err), res, combined_err
+            return True, False, res, ""
 
         # Closed-loop Shadow Run, API Contract & Semantic Output Auto-Heal (up to 2 repair rounds)
-        passed_all, run_res, issue_detail = _evaluate_candidate(code)
-        if not passed_all and not run_res.ok:
+        passed_all, has_contract_err, run_res, issue_detail = _evaluate_candidate(code)
+        if not passed_all and not run_res.ok and not has_contract_err:
             aggressive = static_auto_heal(code)
             if aggressive != code and not _syntax_error(aggressive):
-                ok_agg, retry_res, retry_issue = _evaluate_candidate(aggressive)
+                ok_agg, c_agg, retry_res, retry_issue = _evaluate_candidate(aggressive)
                 if ok_agg or retry_res.ok:
-                    code, passed_all, run_res, issue_detail = aggressive, ok_agg, retry_res, retry_issue
+                    code, passed_all, has_contract_err, run_res, issue_detail = (
+                        aggressive, ok_agg, c_agg, retry_res, retry_issue,
+                    )
 
         repair_prompt = prompt_for_repair or raw_text
         skels = skeletons_for_repair or []
-        best_skel = skels[0] if skels else None
         for _round in range(2):
             if passed_all:
                 break
+            # If the draft missed required class/function names completely, regenerate cleanly from starter_for_contract
+            base_existing = starter_for_contract if (has_contract_err and not editing_existing) else code
             repaired_candidate = None
             if tier.startswith("tier1_") and allow_cloud:
                 provider_only = tier[6:]
                 sys_p, usr_m = build_context_injected_prompt(
-                    repair_prompt, skels, existing_code=code,
+                    repair_prompt, [] if has_contract_err else skels, existing_code=base_existing,
                     error_traceback=issue_detail, workspace_context=ws_context,
                 )
                 repaired_candidate = call_tier1_cloud_llm(
@@ -169,7 +174,7 @@ def process_request(
                 )
             elif allow_local:
                 repaired_candidate = call_tier2_local_llm(
-                    repair_prompt, best_skel, existing_code=code,
+                    repair_prompt, None, base_existing,
                     error_traceback=issue_detail, workspace_context=ws_context, diagnostics=diagnostics,
                 )
             if repaired_candidate is None:
@@ -178,12 +183,11 @@ def process_request(
             if _syntax_error(new_code):
                 break
             new_code, _ = _prepare_candidate_code(new_code, editing_existing=editing_existing)
-            new_passed, new_run, new_issue = _evaluate_candidate(new_code)
-            # Keep the repaired version if it passes everything, or fixes a crash without breaking runtime
-            if new_passed or (new_run.ok and not run_res.ok):
-                code, tier, passed_all, run_res, issue_detail = new_code, new_tier, new_passed, new_run, new_issue
-            elif not run_res.ok:
-                code, tier, passed_all, run_res, issue_detail = new_code, new_tier, new_passed, new_run, new_issue
+            new_passed, new_c_err, new_run, new_issue = _evaluate_candidate(new_code)
+            if new_passed or (not new_c_err and has_contract_err) or (new_run.ok and not run_res.ok) or not run_res.ok:
+                code, tier, passed_all, has_contract_err, run_res, issue_detail = (
+                    new_code, new_tier, new_passed, new_c_err, new_run, new_issue,
+                )
 
         if run_res.ok:
             extra_note = f" ({issue_detail})" if issue_detail else ""
@@ -213,8 +217,10 @@ def process_request(
 
     ws_context = collect_workspace_context(raw_text, file_path=file_path, notebook_context=notebook_context)
     query_for_rag = parsed.prompt_text or raw_text
-    top_skeletons = select_relevant_skeletons(query_for_rag, top_k=2)
-    best_skeleton = top_skeletons[0] if top_skeletons else None
+    top_skeletons = select_relevant_skeletons(query_for_rag, top_k=2, for_local_model=False)
+    local_skeletons = select_relevant_skeletons(query_for_rag, top_k=1, for_local_model=True)
+    best_skeleton = local_skeletons[0] if local_skeletons else None
+    rag_fallback_skeleton = top_skeletons[0] if top_skeletons else None
     completing_template = (
         bool(parsed.existing_code)
         and action_mode != "self_fix"
@@ -337,8 +343,8 @@ def process_request(
         error = detected_issue or "Mã này qua kiểm tra cú pháp. Cần lỗi cụ thể hoặc bật Ollama/Cloud để phân tích logic."
         return finish("invalid" if detected_issue else "unsupported", "self_fix", error=error)
     sample = _explicit_reference(parsed)
-    if sample is None and allow_rag_fallback and best_skeleton is not None:
-        sample = best_skeleton
+    if sample is None and allow_rag_fallback and rag_fallback_skeleton is not None:
+        sample = rag_fallback_skeleton
     if sample:
         code = customize_skeleton_with_prompt(sample["id"], sample["code"], parsed.prompt_text, parsed.dsl_params)
         summary = ""

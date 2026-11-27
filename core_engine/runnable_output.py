@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+import warnings
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .golden_skeletons import strip_accents
@@ -672,7 +673,9 @@ def _extract_literal_sample_call(prompt: str, funcs: Dict[str, ast.FunctionDef])
                 continue
             snippet = prompt[start:end].strip()
             try:
-                expr = ast.parse(snippet, mode="eval").body
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", SyntaxWarning)
+                    expr = ast.parse(snippet, mode="eval").body
             except (SyntaxError, ValueError, RecursionError):
                 continue
             if isinstance(expr, ast.Call) and _call_matches_signature(expr, func_def):
@@ -738,7 +741,9 @@ def _extract_example_literal_for_single_arg(prompt: str, funcs: Dict[str, ast.Fu
                 cand = num_m.group(0)
         if cand:
             try:
-                value = ast.literal_eval(cand)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", SyntaxWarning)
+                    value = ast.literal_eval(cand)
             except (ValueError, SyntaxError, MemoryError, RecursionError):
                 continue
             return f"{single_arg_funcs[0]}({value!r})"

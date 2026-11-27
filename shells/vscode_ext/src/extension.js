@@ -231,7 +231,7 @@ function collectNotebookInfo(document) {
 }
 
 function findPromptBlocks(source) {
-  const tokens = /#[^\r\n]*|"""|'''|"|'|[()[\]{}]|\\\r?\n/g;
+  const tokens = /#[^\r\n]*|"{3,}|'{3,}|"|'|[()[\]{}]|\\\r?\n/g;
   const blocks = [];
   let depth = 0;
   let continued = false;
@@ -255,20 +255,26 @@ function findPromptBlocks(source) {
       depth = Math.max(0, depth - 1);
       continue;
     }
+    const baseDelim = token.length >= 3 ? token.slice(0, 3) : token;
+    const quoteCh = token[0];
     let end = tokens.lastIndex;
-    while (end < source.length && !source.startsWith(token, end)) {
+    while (end < source.length && !source.startsWith(baseDelim, end)) {
       if (source[end] === '\\') {
         end += source.startsWith('\r\n', end + 1) ? 3 : 2;
-      } else if (token.length === 1 && /[\r\n]/.test(source[end])) {
+      } else if (baseDelim.length === 1 && /[\r\n]/.test(source[end])) {
         break;
       } else {
         end++;
       }
     }
-    const closed = source.startsWith(token, end);
-    tokens.lastIndex = closed ? end + token.length : end;
+    const closed = source.startsWith(baseDelim, end);
+    let closeEnd = closed ? end + baseDelim.length : end;
+    if (closed && baseDelim.length === 3) {
+      while (closeEnd < source.length && source[closeEnd] === quoteCh) closeEnd++;
+    }
+    tokens.lastIndex = closeEnd;
     previousEnd = tokens.lastIndex;
-    if (!closed || token.length !== 3 || depth || continued || start !== lineStart) continue;
+    if (!closed || baseDelim.length !== 3 || depth || continued || start !== lineStart) continue;
     const lineEnd = source.indexOf('\n', previousEnd);
     const tail = source.slice(previousEnd, lineEnd === -1 ? source.length : lineEnd);
     if (/^\s*$/.test(tail)) blocks.push({ start, end: previousEnd });

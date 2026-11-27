@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
@@ -58,7 +59,9 @@ class Review:
 
 def syntax_error(code: str) -> str:
     try:
-        compile(code, "<candidate>", "exec")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            compile(code, "<candidate>", "exec")
     except SyntaxError as exc:
         # Exception messages can quote submitted content. Report only the location.
         return f"Mã Python có lỗi cú pháp tại dòng {exc.lineno or '?'}."

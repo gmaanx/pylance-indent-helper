@@ -638,6 +638,140 @@ if __name__ == "__main__":
     main()
 '''
 
+SKELETON_PURE_VOWEL_COSINE = '''# Bai 2.1: Vector hoa nguyen am & Do tuong dong Cosine
+import math
+
+
+def vector_nguyen_am(text: str) -> list[int]:
+    lowered = text.lower()
+    return [lowered.count(ch) for ch in "aeiou"]
+
+
+def do_tuong_dong_cosine(v1: list[int], v2: list[int]) -> float:
+    if len(v1) != len(v2):
+        raise ValueError("Hai vector phai co cung do dai.")
+    norm1 = math.sqrt(sum(x * x for x in v1))
+    norm2 = math.sqrt(sum(y * y for y in v2))
+    if norm1 == 0.0 or norm2 == 0.0:
+        return 0.0
+    dot_val = sum(x * y for x, y in zip(v1, v2))
+    return float(dot_val / (norm1 * norm2))
+
+
+def main():
+    s1 = "Artificial Intelligence"
+    s2 = "Automated Reasoning"
+    v1 = vector_nguyen_am(s1)
+    v2 = vector_nguyen_am(s2)
+    v0 = vector_nguyen_am("Rhythm")
+    print("Vector 1:", v1)
+    print("Vector 2:", v2)
+    print(f"Cosine(v1, v2): {do_tuong_dong_cosine(v1, v2):.6f}")
+    print(f"Bien vector 0 : {do_tuong_dong_cosine(v1, v0):.1f}")
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+SKELETON_PURE_GRAPH_DICT_BFS_DFS = '''# Bai 4.1: Cai dat BFS (FIFO) va DFS (LIFO) tren do thi bieu dien bang dict
+from collections import deque
+
+
+def bfs(graph, start, goal):
+    if start == goal:
+        return [start]
+    if start not in graph:
+        return None
+    queue = deque([(start, [start])])
+    visited = {start}
+    while queue:
+        current, path = queue.popleft()
+        for neighbor in graph.get(current, []):
+            if neighbor == goal:
+                return path + [neighbor]
+            if neighbor not in visited:
+                visited.add(neighbor)
+                queue.append((neighbor, path + [neighbor]))
+    return None
+
+
+def dfs(graph, start, goal):
+    if start == goal:
+        return [start]
+    if start not in graph:
+        return None
+    stack = [(start, [start])]
+    visited = set()
+    while stack:
+        current, path = stack.pop()
+        if current in visited:
+            continue
+        if current == goal:
+            return path
+        visited.add(current)
+        for neighbor in reversed(graph.get(current, [])):
+            if neighbor not in visited:
+                stack.append((neighbor, path + [neighbor]))
+    return None
+
+
+def main():
+    graph = {
+        "A": ["B", "C"],
+        "B": ["D", "E"],
+        "C": ["F"],
+        "D": [],
+        "E": ["F"],
+        "F": [],
+    }
+    print("Duong di BFS:", bfs(graph, "A", "F"))
+    print("Duong di DFS:", dfs(graph, "A", "F"))
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+SKELETON_PURE_PROP_FORWARD_CLAUSES = '''# Bai 4.2: Suy dien tien logic menh de & Dem rang buoc menh de tuyen vi pham
+def suy_dien_tien(facts: dict[str, bool]) -> dict[str, bool]:
+    ket_qua = {k: bool(v) for k, v in facts.items()}
+    ket_qua["Q"] = bool(ket_qua.get("Q", False) or (ket_qua.get("C", False) and ket_qua.get("A", False)))
+    ket_qua["H"] = bool(ket_qua.get("H", False) or (ket_qua.get("R", False) and ket_qua.get("I", False)))
+    ket_qua["E"] = bool(ket_qua.get("E", False) or (ket_qua["Q"] and ket_qua["H"] and ket_qua.get("D", False)))
+    ket_qua["S"] = bool(ket_qua.get("S", False) or ket_qua["E"])
+    return ket_qua
+
+
+def dem_rang_buoc_vi_pham(assignment: dict[str, bool], clauses: list[list[tuple[str, bool]]]) -> int:
+    vi_pham = 0
+    for clause in clauses:
+        thoa_man = any(
+            bien in assignment and bool(assignment[bien]) == bool(gia_tri_dung)
+            for bien, gia_tri_dung in clause
+        )
+        if not thoa_man:
+            vi_pham += 1
+    return vi_pham
+
+
+def main():
+    facts = {"C": True, "A": True, "R": True, "I": False, "D": True}
+    kq = suy_dien_tien(facts)
+    print("Ket qua suy dien tien:", kq)
+    clauses = [
+        [("C", False), ("A", False), ("Q", True)],
+        [("R", False), ("I", False), ("H", True)],
+        [("Q", False), ("H", False), ("D", False), ("E", True)],
+        [("E", False), ("S", True)],
+    ]
+    print("So menh de vi pham:", dem_rang_buoc_vi_pham(kq, clauses))
+
+
+if __name__ == "__main__":
+    main()
+'''
+
 KNOWLEDGE_UNCERTAINTY_OOP_SKELETONS = {
     "ontology_tbox_abox_simpleai": {
         "id": "ontology_tbox_abox_simpleai",
@@ -719,5 +853,32 @@ KNOWLEDGE_UNCERTAINTY_OOP_SKELETONS = {
             "nuttimkiem", "f_cost", "truy_vet_duong_di", "node cho bai toan tim kiem",
         ],
         "code": SKELETON_OOP_SEARCH_NODE,
+    },
+    "pure_vowel_vector_cosine": {
+        "id": "pure_vowel_vector_cosine",
+        "category": "raw",
+        "title": "Vector hoa nguyen am aeiou va do tuong dong Cosine (vector_nguyen_am, do_tuong_dong_cosine)",
+        "keywords": [
+            "vector_nguyen_am", "do_tuong_dong_cosine", "aeiou", "nguyen am", "cosine",
+        ],
+        "code": SKELETON_PURE_VOWEL_COSINE,
+    },
+    "pure_graph_dict_bfs_dfs": {
+        "id": "pure_graph_dict_bfs_dfs",
+        "category": "raw",
+        "title": "BFS (FIFO deque) va DFS (LIFO stack) tren do thi tu dien dict (bfs, dfs)",
+        "keywords": [
+            "bfs", "dfs", "fifo", "lifo", "deque", "visited", "do thi", "dict",
+        ],
+        "code": SKELETON_PURE_GRAPH_DICT_BFS_DFS,
+    },
+    "pure_prop_forward_clauses": {
+        "id": "pure_prop_forward_clauses",
+        "category": "logic",
+        "title": "Suy dien tien logic menh de va dem rang buoc menh de tuyen vi pham (suy_dien_tien, dem_rang_buoc_vi_pham)",
+        "keywords": [
+            "suy_dien_tien", "dem_rang_buoc_vi_pham", "menh de tuyen", "clauses", "assignment", "facts",
+        ],
+        "code": SKELETON_PURE_PROP_FORWARD_CLAUSES,
     },
 }

@@ -691,3 +691,43 @@ test('pre-saved encrypted credentials enable silent zero-popup Cloud and Auto-Pi
   await dirtySavable.run('runSavedFile');
   assert.equal(dirtySavable.tasks.length, 1);
 });
+
+test('four-quote prompt blocks ("""" ... """") are isolated and replaced cleanly without leaving stray quotes', async () => {
+  const first = '"""\nĐề 1 chuẩn 3 dấu nháy\n"""';
+  const second = '""""\nBài 2.1: Đề có 4 dấu nháy do gõ dư\n""""';
+  const original = first + '\n\n' + second + '\n';
+  const cursor = original.indexOf('Bài 2.1');
+  const h = harness({ text: original, selected: [cursor, cursor] });
+  const req = h.run('instantFormat');
+  await flush();
+  assert.equal(JSON.parse(h.children[0].input).text, second);
+  finish(h.children[0], 'print("ok_2_1")');
+  await req;
+  await flush();
+  assert.equal(h.document.getText(), first + '\n\nprint("ok_2_1")\n');
+});
+
+test('all 6 practice blocks in thu_nghiem.py are cleanly isolated at cursor position', async () => {
+  const samplePath = path.resolve(__dirname, '../thu_nghiem.py');
+  const sampleText = fs.readFileSync(samplePath, 'utf8');
+  const markers = [
+    'Câu 1: Cho bài toán 8-puzzle',
+    'Phân công ca trực cho 4 nhân viên',
+    'Bài 1.2: Lớp NutTimKiem',
+    'Bài 2.1: Vector hóa nguyên âm',
+    'Bài 4.1: Cài đặt BFS và DFS',
+    'Bài 4.2: Kiểm tra ràng buộc'
+  ];
+  for (const marker of markers) {
+    const pos = sampleText.indexOf(marker);
+    assert.ok(pos !== -1, 'Missing marker in thu_nghiem.py: ' + marker);
+    const h = harness({ text: sampleText, selected: [pos, pos] });
+    const req = h.run('instantFormat');
+    await flush();
+    const sent = JSON.parse(h.children[0].input).text;
+    assert.ok(sent.includes(marker), 'Expected isolated block for ' + marker);
+    assert.equal(markers.filter((m) => sent.includes(m)).length, 1, 'Block leaked neighbor exercises for ' + marker);
+    finish(h.children[0], 'print("ok")');
+    await req;
+  }
+});

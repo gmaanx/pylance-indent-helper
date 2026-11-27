@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import ast
 import re
-from typing import Set
+import warnings
+from typing import Dict, List, Optional, Set, Tuple
 
 from .golden_skeletons import strip_accents
 from .runnable_output import prompt_forbids_print
@@ -20,13 +21,123 @@ _CLASS_REQ_RE = re.compile(
     re.IGNORECASE,
 )
 _FUNC_REQ_RE = re.compile(
-    r"\b(?:viet|tao|xay\s+dung|cai\s+dat|dinh\s+nghia)\s+ham(?:\s+python(?:\s+thuan)?)?\s+`?([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    r"\b(?:(?:viet|tao|xay\s+dung|cai\s+dat|dinh\s+nghia)\s+)?ham(?:\s+python(?:\s+thuan)?)?\s+`?([A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.IGNORECASE,
 )
 _METHOD_SELF_RE = re.compile(
     r"`?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*self\b",
 )
-_IGNORED_NAMES = {"SearchProblem", "CspProblem", "Environment", "RLEnvironment", "Python", "main"}
+_IGNORED_NAMES = {
+    "SearchProblem", "CspProblem", "Environment", "RLEnvironment",
+    "Python", "main", "heuristic", "danh_gia", "kiem_tra", "func", "f", "g", "h",
+}
+
+
+def _extract_balanced_parens(text: str, open_paren_idx: int) -> Optional[str]:
+    if open_paren_idx < 0 or open_paren_idx >= len(text) or text[open_paren_idx] != "(":
+        return None
+    depth = 0
+    in_q: Optional[str] = None
+    esc = False
+    for idx in range(open_paren_idx, min(len(text), open_paren_idx + 300)):
+        ch = text[idx]
+        if in_q:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == in_q:
+                in_q = None
+            continue
+        if ch in ("'", '"'):
+            in_q = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_paren_idx + 1 : idx]
+    return None
+
+
+def _count_signature_params(sig_inner: str) -> Optional[Tuple[int, int]]:
+    """Return `(min_required, max_positional)` for a prompt signature like `a, b: int = 1`, or None if variadic/unknown."""
+    s = sig_inner.strip()
+    if not s:
+        return (0, 0)
+    if "..." in s or "*" in s or "/" in s:
+        return None
+    parts: List[str] = []
+    depth = 0
+    cur: List[str] = []
+    for ch in s:
+        if ch in "([{":
+            depth += 1
+            cur.append(ch)
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        parts.append("".join(cur).strip())
+    parts = [p for p in parts if p and p != "self"]
+    total = len(parts)
+    optional = sum(1 for p in parts if "=" in p)
+    return (max(0, total - optional), total)
+
+
+def extract_prompt_func_arities(prompt: str) -> Dict[str, Tuple[int, int]]:
+    """Extract `(min_args, max_args)` for functions explicitly specified with parameter lists in `prompt`."""
+    if not prompt or not prompt.strip():
+        return {}
+    folded = strip_accents(prompt)
+    same_len = len(prompt) == len(folded)
+    arities: Dict[str, Tuple[int, int]] = {}
+    for m in _FUNC_REQ_RE.finditer(folded):
+        fn_name = prompt[m.start(1):m.end(1)] if same_len else m.group(1)
+        if fn_name in _IGNORED_NAMES:
+            continue
+        open_idx = m.end() - 1
+        inner = _extract_balanced_parens(folded, open_idx)
+        if inner is None:
+            continue
+        counts = _count_signature_params(inner)
+        if counts is not None:
+            arities[fn_name] = counts
+    return arities
+
+
+def extract_prompt_api_names(prompt: str) -> Tuple[List[str], List[str], List[str]]:
+    """Return `(required_classes, required_functions, required_self_methods)` explicitly named in `prompt`."""
+    if not prompt or not prompt.strip():
+        return [], [], []
+    folded = strip_accents(prompt)
+    same_len = len(prompt) == len(folded)
+    classes: List[str] = []
+    funcs: List[str] = []
+    methods: List[str] = []
+
+    for m in _CLASS_REQ_RE.finditer(folded):
+        cls_name = prompt[m.start(1):m.end(1)] if same_len else m.group(1)
+        if cls_name not in _IGNORED_NAMES and cls_name not in classes:
+            classes.append(cls_name)
+
+    for m in _FUNC_REQ_RE.finditer(folded):
+        fn_name = prompt[m.start(1):m.end(1)] if same_len else m.group(1)
+        if fn_name not in _IGNORED_NAMES and fn_name not in funcs:
+            funcs.append(fn_name)
+
+    scan_text = prompt if same_len else folded
+    for m in _METHOD_SELF_RE.finditer(scan_text):
+        meth_name = m.group(1)
+        if meth_name not in ("__str__", "__repr__") and meth_name not in methods:
+            methods.append(meth_name)
+
+    return classes, funcs, methods
 
 
 def check_api_contract(code: str, prompt: str = "", starter_code: str = "") -> str:
@@ -35,13 +146,16 @@ def check_api_contract(code: str, prompt: str = "", starter_code: str = "") -> s
     mandated by `starter_code` and `prompt`. Returns "" if satisfied, else a diagnostic string.
     """
     try:
-        tree = ast.parse(code)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(code)
     except (SyntaxError, ValueError, RecursionError):
         return "Mã nguồn có lỗi cú pháp."
 
     defined_classes: Set[str] = set()
     defined_funcs: Set[str] = set()
     defined_methods: Set[str] = set()
+    func_nodes: Dict[str, ast.AST] = {}
 
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
@@ -52,6 +166,7 @@ def check_api_contract(code: str, prompt: str = "", starter_code: str = "") -> s
                     defined_methods.add(item.name)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             defined_funcs.add(node.name)
+            func_nodes[node.name] = node
 
     missing: list[str] = []
 
@@ -78,28 +193,30 @@ def check_api_contract(code: str, prompt: str = "", starter_code: str = "") -> s
                         missing.append(f"def {node.name}()")
 
     # 2. Explicit prompt contract
-    if prompt and prompt.strip():
-        folded = strip_accents(prompt)
-        # Preserve identifier casing by matching spans on folded when length matches
-        scan_text = prompt if len(prompt) == len(folded) else folded
-        for m in _CLASS_REQ_RE.finditer(folded):
-            cls_name = prompt[m.start(1):m.end(1)] if len(prompt) == len(folded) else m.group(1)
-            if cls_name not in _IGNORED_NAMES and not any(c.casefold() == cls_name.casefold() for c in defined_classes):
-                missing.append(f"class {cls_name}")
-            elif cls_name not in _IGNORED_NAMES and cls_name not in defined_classes and len(prompt) == len(folded):
-                missing.append(f"class {cls_name} (sai hoa/thường)")
+    req_classes, req_funcs, req_methods = extract_prompt_api_names(prompt)
+    for cls_name in req_classes:
+        if not any(c.casefold() == cls_name.casefold() for c in defined_classes):
+            missing.append(f"class {cls_name}")
+        elif cls_name not in defined_classes:
+            missing.append(f"class {cls_name} (sai hoa/thường)")
 
-        for m in _FUNC_REQ_RE.finditer(folded):
-            fn_name = prompt[m.start(1):m.end(1)] if len(prompt) == len(folded) else m.group(1)
-            if fn_name not in _IGNORED_NAMES:
-                all_callables = defined_funcs | defined_methods
-                if not any(f.casefold() == fn_name.casefold() for f in all_callables):
-                    missing.append(f"def {fn_name}()")
+    req_arities = extract_prompt_func_arities(prompt)
+    for fn_name in req_funcs:
+        all_callables = defined_funcs | defined_methods
+        if not any(f.casefold() == fn_name.casefold() for f in all_callables):
+            missing.append(f"def {fn_name}()")
+        elif fn_name in func_nodes and fn_name in req_arities:
+            fn_node = func_nodes[fn_name]
+            pos_total = len(fn_node.args.posonlyargs) + len(fn_node.args.args)
+            min_def = max(0, pos_total - len(fn_node.args.defaults))
+            has_vararg = fn_node.args.vararg is not None
+            exp_min, exp_max = req_arities[fn_name]
+            if not has_vararg and (pos_total < exp_max or min_def > exp_min):
+                missing.append(f"def {fn_name}() sai số lượng tham số (đề yêu cầu {exp_max} tham số)")
 
-        for m in _METHOD_SELF_RE.finditer(scan_text):
-            meth_name = m.group(1)
-            if meth_name not in ("__str__", "__repr__") and meth_name not in defined_methods:
-                missing.append(f"phương thức {meth_name}(self, ...)")
+    for meth_name in req_methods:
+        if meth_name not in defined_methods:
+            missing.append(f"phương thức {meth_name}(self, ...)")
 
     if not missing:
         return ""

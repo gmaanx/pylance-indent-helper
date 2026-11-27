@@ -8,6 +8,7 @@ from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .config_manager import CONFIG
+from .contract_checker import check_api_contract, extract_prompt_api_names
 from .golden_skeletons import RETRIEVER, SIMPLEAI_STRICT_RULES, strip_accents
 from .runnable_output import ensure_runnable_print, has_meaningful_runnable_main, prompt_forbids_print
 from .workspace_context import is_starter_template
@@ -97,18 +98,74 @@ def select_relevant_skeletons(
     *,
     top_k: int = 2,
     min_score: float = 12.0,
+    for_local_model: bool = False,
 ) -> List[Dict[str, Any]]:
     if not query or not query.strip():
         return []
     folded = strip_accents(query).casefold()
+    needs_ai_lib = _needs_ai_library_rules(query) or any(
+        kw in folded for kw in ("ontology", "tbox", "abox", "mang ngu nghia", "mang bayes", "enumeration_ask")
+    )
+    req_classes, req_funcs, _ = extract_prompt_api_names(query)
+
+    # CRITICAL: If the prompt prescribes custom pure-Python functions/classes (without SimpleAI/Kanren),
+    # DO NOT inject full Golden Skeletons into LLMs (especially small 1.5B/3B Ollama models),
+    # unless a skeleton actually defines those exact requested symbol names!
+    if (req_classes or req_funcs) and not needs_ai_lib:
+        candidates = RETRIEVER.retrieve(query, top_k=max(8, top_k * 3))
+        matching = []
+        for item in candidates:
+            if item.get("score", 0.0) < min_score:
+                continue
+            skel_code = item.get("code", "")
+            if check_api_contract(skel_code, query) == "":
+                matching.append(item)
+        return matching[:top_k]
+
     if "khong dung simpleai" in folded or ("python thuan" in folded and "simpleai" not in folded and "kanren" not in folded):
+        if for_local_model:
+            return []
         candidates = RETRIEVER.retrieve(query, top_k=top_k * 2)
         return [
             item for item in candidates
             if item.get("score", 0.0) >= min_score and "simpleai" not in item.get("code", "").lower()
         ][:top_k]
+
+    if for_local_model and not needs_ai_lib:
+        # For small local models, only inject non-SimpleAI skeletons on very high confidence
+        candidates = RETRIEVER.retrieve(query, top_k=top_k)
+        return [item for item in candidates if item.get("score", 0.0) >= 24.0]
+
     candidates = RETRIEVER.retrieve(query, top_k=top_k)
     return [item for item in candidates if item.get("score", 0.0) >= min_score]
+
+
+def _pure_python_domain_hints(user_prompt: str) -> str:
+    folded = strip_accents(user_prompt).casefold()
+    hints: List[str] = []
+    if ("bfs(" in folded or "dfs(" in folded) and "dict" in folded and "simpleai" not in folded:
+        hints.append(
+            "- BFS/DFS trên đồ thị `dict`: lưu `(dinh_hien_tai, duong_di)` với `duong_di` khởi tạo `[start]`. "
+            "BFS dùng `collections.deque` (`popleft()`), DFS dùng `list` (`pop()`), kiểm tra `visited` chống chu trình, "
+            "trả về `list` đường đi `[start, ..., goal]` khi tới `goal`, hoặc `None` nếu không tới được."
+        )
+    if "cosine" in folded or ("chuan" in folded and "chia cho 0" in folded):
+        hints.append(
+            "- Độ tương đồng Cosine: tính `norm1 = math.sqrt(sum(x*x for x in v1))` và `norm2 = math.sqrt(sum(y*y for y in v2))`; "
+            "BẮT BUỘC kiểm tra `if norm1 == 0 or norm2 == 0: return 0.0` (dùng `or`, KHÔNG dùng `and`) trước khi chia."
+        )
+    if "suy_dien" in folded or ("facts" in folded and ("->" in user_prompt or "rightarrow" in folded)):
+        hints.append(
+            "- Suy diễn tiến (Modus Ponens) trên `facts: dict`: khởi tạo `kq = dict(facts)` và gán mặc định `False` cho các biến kết luận chưa có; "
+            "lặp suy diễn: với mỗi quy tắc `A and B -> Q`, nếu các tiền đề đều `True` (`kq.get('A', False) and ...`) thì `kq['Q'] = True` "
+            "(TUYỆT ĐỐI KHÔNG truy cập `facts['S']` cho biến chưa có trong `facts`, và KHÔNG viết `a, b = dict_kq` vì sẽ lấy nhầm tên khóa thay vì giá trị bool)."
+        )
+    if "menh de tuyen" in folded or "clauses" in folded or "rang_buoc_vi_pham" in folded:
+        hints.append(
+            "- Đếm mệnh đề tuyển (OR clause) vi phạm: mỗi `clause` được thỏa mãn nếu `any(assignment.get(bien) == gia_tri_dung for bien, gia_tri_dung in clause)`; "
+            "nếu `not thoa_man` thì tăng biến đếm vi phạm lên 1."
+        )
+    return "LƯU Ý THUẬT TOÁN & XỬ LÝ BIÊN BẮT BUỘC:\n" + "\n".join(hints) if hints else ""
 
 
 def build_context_injected_prompt(
@@ -127,6 +184,9 @@ def build_context_injected_prompt(
         "Dùng thư viện chuẩn khi đề yêu cầu Python thuần hoặc không cần thư viện ngoài. "
         "Giữ đúng tên lớp, tên hàm, số chiều và chữ ký phương thức mà đề đã nêu."
     ]
+    domain_hints = _pure_python_domain_hints(user_prompt)
+    if domain_hints:
+        sections.append(domain_hints)
     if existing_code.strip() and is_starter_template(existing_code) and not error_traceback.strip():
         sections.append(
             "CHẾ ĐỘ ĐIỀN KHUYẾT KHUNG ĐỀ THI (# TODO / pass / NotImplementedError):\n"
@@ -135,9 +195,10 @@ def build_context_injected_prompt(
         )
     if top_skeletons or _needs_ai_library_rules(f"{user_prompt}\n{existing_code}"):
         sections.append(SIMPLEAI_STRICT_RULES.strip())
-    if top_skeletons:
+    if top_skeletons and not error_traceback.strip():
         examples = "\n\n".join(
-            f"Mẫu tham khảo {item['title']}\n{item['code']}" for item in top_skeletons[:2]
+            f"Mẫu tham khảo cú pháp ({item['title']} — CHỈ tham khảo cú pháp thư viện, KHÔNG chép tên hàm/dữ liệu nếu đề yêu cầu khác):\n{item['code']}"
+            for item in top_skeletons[:2]
         )
         sections.append(examples)
     if workspace_context and workspace_context.strip():

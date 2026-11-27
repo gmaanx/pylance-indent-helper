@@ -701,6 +701,7 @@ def solve_spec(problem: object) -> OfflineSolution:
     from .offline_course_csp import COURSE_CSP_SOLVERS
     from .offline_course_logic import COURSE_LOGIC_SOLVERS
     from .offline_course_search import COURSE_SEARCH_SOLVERS
+    from .offline_exam_exercises import EXAM_CODING_SOLVERS
     from .offline_geometry_classes import GEOMETRY_CLASS_SOLVERS
     from .offline_knowledge import KNOWLEDGE_SOLVERS
     from .offline_learning import LEARNING_SOLVERS
@@ -726,7 +727,7 @@ def solve_spec(problem: object) -> OfflineSolution:
         **COMBINATORIAL_SOLVERS, **LEARNING_SOLVERS,
         **AGENT_SOLVERS, **COURSE_CSP_SOLVERS, **COURSE_LOGIC_SOLVERS,
         **COURSE_SEARCH_SOLVERS, **KNOWLEDGE_SOLVERS, **PYTHON_BASICS_SOLVERS,
-        **GEOMETRY_CLASS_SOLVERS,
+        **GEOMETRY_CLASS_SOLVERS, **EXAM_CODING_SOLVERS,
         **UNCERTAINTY_SOLVERS, **LOCAL_SEARCH_SOLVERS,
         **SIMPLEAI_CSP_SOLVERS, **SIMPLEAI_SEARCH_SOLVERS, **SIMPLEAI_LOCAL_SOLVERS,
     }
