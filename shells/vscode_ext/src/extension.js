@@ -276,19 +276,67 @@ function findPromptBlocks(source) {
   return blocks;
 }
 
+function findHashPromptBlocks(source, tripleBlocks) {
+  const lines = source.split(/\r?\n/);
+  const hashBlocks = [];
+  let offset = 0;
+  let blockStart = -1;
+  let blockEnd = -1;
+
+  const insideTriple = (pos) => tripleBlocks.some((b) => pos >= b.start && pos < b.end);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const hasCrLf = source.startsWith('\r\n', offset + line.length);
+    const lineEnd = offset + line.length;
+    const nextOffset = lineEnd + (hasCrLf ? 2 : (offset + line.length < source.length ? 1 : 0));
+    const trimmed = line.trim();
+
+    if (!insideTriple(offset) && trimmed.startsWith('#') && !trimmed.startsWith('#!') && !/^#\s*-\*-\s*coding/i.test(trimmed)) {
+      if (blockStart === -1) blockStart = offset;
+      blockEnd = lineEnd;
+    } else {
+      if (blockStart !== -1) {
+        hashBlocks.push({ start: blockStart, end: blockEnd, kind: 'hash' });
+        blockStart = -1;
+        blockEnd = -1;
+      }
+    }
+    offset = nextOffset;
+  }
+  if (blockStart !== -1) {
+    hashBlocks.push({ start: blockStart, end: blockEnd, kind: 'hash' });
+  }
+  return hashBlocks;
+}
+
+function hasCodeOutsideBlocks(source, blocks) {
+  if (!blocks.length) return Boolean(source.trim());
+  let cursor = 0;
+  let outside = '';
+  const sorted = [...blocks].sort((a, b) => a.start - b.start);
+  for (const b of sorted) {
+    if (b.start > cursor) outside += source.slice(cursor, b.start) + '\n';
+    cursor = Math.max(cursor, b.end);
+  }
+  if (cursor < source.length) outside += source.slice(cursor);
+  return Boolean(outside.trim());
+}
+
 function hasStarterCodeOutsidePrompts(source, blocks) {
   if (!blocks.length) return false;
   let cursor = 0;
   let outside = '';
-  for (const b of blocks) {
-    outside += source.slice(cursor, b.start);
-    cursor = b.end;
+  const sorted = [...blocks].sort((a, b) => a.start - b.start);
+  for (const b of sorted) {
+    if (b.start > cursor) outside += source.slice(cursor, b.start) + '\n';
+    cursor = Math.max(cursor, b.end);
   }
-  outside += source.slice(cursor);
-  return /(?:^\s*(?:def|class)\s+\w+|#\s*TODO\b|NotImplementedError)/m.test(outside);
+  if (cursor < source.length) outside += source.slice(cursor);
+  return /(?:^\s*(?:def|class)\s+\w+[\s\S]*?(?:#\s*TODO\b|NotImplementedError|\bpass\b)|#\s*TODO\b|NotImplementedError)/m.test(outside);
 }
 
-function takeSnapshot(editor) {
+function takeSnapshot(editor, mode = 'full') {
   const document = editor.document;
   const source = document.getText();
   const selection = editor.selection;
@@ -296,14 +344,27 @@ function takeSnapshot(editor) {
   const end = document.offsetAt(selection.end);
   let replaceStart = selection.isEmpty ? 0 : start;
   let replaceEnd = selection.isEmpty ? source.length : end;
-  const blocks = findPromptBlocks(source);
-  const current = blocks.find((block) => start >= block.start && end <= block.end);
-  const isStarterFile = selection.isEmpty && blocks.length <= 1 && hasStarterCodeOutsidePrompts(source, blocks);
+  const tripleBlocks = findPromptBlocks(source);
+  const hashBlocks = findHashPromptBlocks(source, tripleBlocks);
+  const allBlocks = [...tripleBlocks, ...hashBlocks].sort((a, b) => a.start - b.start);
+  const currentTriple = tripleBlocks.find((block) => start >= block.start && end <= block.end);
+
+  if (mode === 'self_fix' && selection.isEmpty && !currentTriple && hasCodeOutsideBlocks(source, allBlocks)) {
+    return {
+      editor, document, source, start, end,
+      version: document.version,
+      range: new vscode.Range(document.positionAt(0), document.positionAt(source.length)),
+      replaceStart: 0, replaceEnd: source.length
+    };
+  }
+
+  const isStarterFile = selection.isEmpty && tripleBlocks.length <= 1 && hasStarterCodeOutsidePrompts(source, allBlocks);
+  const current = allBlocks.find((block) => start >= block.start && end <= block.end);
   if (current && !isStarterFile) {
     replaceStart = current.start;
     replaceEnd = current.end;
-  } else if (!isStarterFile && (selection.isEmpty ? blocks.length > 1 :
-    blocks.filter((block) => start < block.end && end > block.start).length > 1)) {
+  } else if (!isStarterFile && (selection.isEmpty ? allBlocks.length > 1 :
+    allBlocks.filter((block) => start < block.end && end > block.start).length > 1)) {
     return null;
   }
   return {
@@ -481,7 +542,7 @@ async function requestSuggestion(mode, provider = 'offline') {
     await vscode.window.showWarningMessage('Chọn một vùng mã hoặc đặt một con trỏ để xử lý cả file.');
     return;
   }
-  const snapshot = takeSnapshot(editor);
+  const snapshot = takeSnapshot(editor, mode);
   if (!snapshot) {
     void vscode.window.showWarningMessage('Có nhiều khối đề. Đặt con trỏ trong khối cần giải hoặc bôi đen đúng một đề.');
     return;
@@ -640,37 +701,33 @@ async function uninstallAllComponents() {
   uninstalling = new Promise((resolve) => { finish = resolve; });
   try {
     const runtime = getRuntime();
-    const script = path.join(runtime.engineRoot, 'go_cai_dat.py');
+    const candidates = [
+      path.join(runtime.engineRoot, 'go_cai_dat.py'),
+      path.join(runtime.root, 'go_cai_dat.py')
+    ];
+    const script = candidates.find((item) => fs.existsSync(item));
     if (typeof runtime.baseEnabled !== 'boolean' ||
         typeof runtime.uninstallPython !== 'string' || !path.isAbsolute(runtime.uninstallPython) ||
-        !fs.existsSync(runtime.uninstallPython) || !fs.existsSync(script)) {
+        !fs.existsSync(runtime.uninstallPython) || !script) {
       throw new Error('Dùng go_cai_dat.bat --all trong bộ cài mới để gỡ toàn bộ công cụ.');
     }
-    const actions = runtime.baseEnabled ? ['Gỡ toàn bộ', 'Chỉ gỡ Alt+1–4'] : ['Gỡ toàn bộ'];
     const decision = await vscode.window.showWarningMessage(
-      'Gỡ toàn bộ công cụ (Alt+1 đến Alt+6, Extension IDE và Ollama đã cài)?',
-      { modal: true }, ...actions
+      'Xóa sạch toàn bộ công cụ (Alt+1 đến Alt+6, Extension IDE, nhật ký, cấu hình và toàn bộ Ollama)?',
+      { modal: true }, 'Gỡ toàn bộ'
     );
-    if (!decision) return;
-    const removeAll = decision === 'Gỡ toàn bộ';
+    if (decision !== 'Gỡ toàn bộ') return;
 
     const operation = activeOperation;
-    if (removeAll || operation?.requiresBase) operation?.controller.abort();
+    operation?.controller.abort();
     await operation?.done;
     if (disabled) return;
     sessionCredentials.clear();
-    const flag = removeAll ? '--all' : '--base-only';
-    const result = await runProcess(runtime.uninstallPython, [script, flag], os.tmpdir());
+    const result = await runProcess(runtime.uninstallPython, [script, '--all'], os.tmpdir());
     if (result.code !== 0) {
-      throw new Error(
-        removeAll
-          ? 'Gỡ toàn bộ chưa hoàn tất. Chạy go_cai_dat.bat --all để xem lỗi chi tiết.'
-          : 'Gỡ phần cơ bản chưa hoàn tất. Chạy go_cai_dat.bat --base-only để xem lỗi chi tiết.'
-      );
+      throw new Error('Gỡ toàn bộ chưa hoàn tất. Chạy go_cai_dat.bat --all để xem lỗi chi tiết.');
     }
-    if (removeAll) {
-      disabled = true;
-    }
+    disabled = true;
+    await vscode.commands.executeCommand('workbench.action.reloadWindow');
   } catch (error) {
     await vscode.window.showErrorMessage(error.message);
   } finally {

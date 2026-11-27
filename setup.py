@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import zipfile
 from pathlib import Path
 
 from core_engine.config_manager import PROVIDERS, save_encrypted_credential
@@ -81,6 +83,10 @@ def check_install(ide: str, ide_cli: Path | None, profile: str = "simpleai") -> 
             if ide_cli:
                 break
     if ide_cli is None or not ide_cli.is_file():
+        if ide in ("auto", "antigravity") and any(
+            (Path.home() / folder / "extensions").is_dir() for folder in (".antigravity-ide", ".antigravity")
+        ):
+            return None, bootstrap
         raise RuntimeError(
             "Khong tim thay CLI cua IDE. Dung --ide-cli DUONG_DAN, "
             "hoac --ide manual de tu cai VSIX tu menu Extensions."
@@ -153,6 +159,66 @@ def smoke_test(python: Path, runtime: Path, profile: str = "simpleai") -> None:
         raise RuntimeError("Kiem tra offline khong tao duoc loi giai da xac minh.")
 
 
+def _sync_vsix_into_extension_dir(vsix: Path, pkg: dict, ext_root: Path) -> None:
+    """Install/update VSIX directly into an IDE extensions directory (e.g., .antigravity-ide/extensions)."""
+    if not ext_root.is_dir():
+        return
+    ext_id = f"{pkg['publisher']}.{pkg['name']}"
+    folder_name = f"{ext_id}-{pkg['version']}"
+    for old_dir in ext_root.glob(f"{ext_id}-[0-9]*"):
+        if old_dir.is_dir():
+            shutil.rmtree(old_dir, ignore_errors=True)
+
+    target_dir = ext_root / folder_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(vsix, "r") as zf:
+        for member in zf.namelist():
+            if member.startswith("extension/") and not member.endswith("/"):
+                rel = member[len("extension/"):]
+                dest = target_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(zf.read(member))
+
+    manifest_file = ext_root / "extensions.json"
+    entries: list = []
+    if manifest_file.is_file():
+        try:
+            loaded = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
+            if isinstance(loaded, list):
+                entries = [
+                    e for e in loaded
+                    if not (
+                        isinstance(e, dict)
+                        and isinstance(e.get("identifier"), dict)
+                        and str(e["identifier"].get("id", "")).casefold() == ext_id.casefold()
+                    )
+                ]
+        except (OSError, ValueError):
+            return
+
+    posix_path = "/" + target_dir.resolve().as_posix().lstrip("/")
+    if len(posix_path) >= 3 and posix_path[2] == ":":
+        posix_path = "/" + posix_path[1].lower() + posix_path[2:]
+    entries.append({
+        "identifier": {"id": ext_id},
+        "version": pkg["version"],
+        "location": {"$mid": 1, "fsPath": str(target_dir.resolve()), "path": posix_path, "scheme": "file"},
+        "relativeLocation": folder_name,
+        "metadata": {
+            "installedTimestamp": int(time.time() * 1000),
+            "pinned": False,
+            "source": "vsix",
+            "publisherDisplayName": pkg["publisher"],
+            "targetPlatform": "universal",
+            "updated": True,
+            "isPreReleaseVersion": False,
+            "hasPreReleaseVersion": False,
+        },
+    })
+    manifest_file.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+    print(f"[OK] Da dong bo extension vao {ext_root}", flush=True)
+
+
 def install_all(
     ide_cli: Path | None,
     bootstrap: Path,
@@ -163,6 +229,7 @@ def install_all(
     auto_model: bool = False,
     api_provider: str | None = None,
     api_key: str | None = None,
+    sync_secondary_ides: bool = False,
 ) -> None:
     root = install_root()
     with install_lock(root):
@@ -200,6 +267,11 @@ def install_all(
                 current = {"cli": str(ide_cli), "extension": extension_id}
                 ides = [entry for entry in ides if entry["cli"].casefold() != str(ide_cli).casefold()]
                 ides.append(current)
+            if sync_secondary_ides:
+                for ide_folder in (".antigravity-ide", ".antigravity"):
+                    ext_dir = Path.home() / ide_folder / "extensions"
+                    if ext_dir.is_dir():
+                        _sync_vsix_into_extension_dir(vsix, pkg, ext_dir)
 
             config = {
                 "engineRoot": str(runtime),
@@ -279,6 +351,7 @@ def main() -> int:
                 auto_model=auto_model,
                 api_provider=api_provider,
                 api_key=api_key,
+                sync_secondary_ides=(args.ide in ("auto", "antigravity")),
             )
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"[LOI] Cai dat chua hoan tat. {exc}", file=sys.stderr)

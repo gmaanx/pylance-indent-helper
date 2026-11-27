@@ -20,6 +20,7 @@ from core_engine.config_manager import (
     load_encrypted_credentials,
     save_encrypted_credential,
 )
+from core_engine.contract_checker import check_api_contract, validate_shadow_output
 from core_engine.engine_pipeline import process_request
 from core_engine.golden_skeletons import ALL_SKELETONS
 from core_engine.workspace_context import collect_workspace_context, is_starter_template
@@ -195,6 +196,98 @@ class ExamUpgradeTests(unittest.TestCase):
         self.assertEqual(res.validation_status, "reference")
         self.assertIn("ontology_tbox_abox_simpleai", res.tier_used)
         self.assertTrue(res.stdout_preview)
+
+    def test_dynamic_vietnamese_nlp_solvers_verify_offline(self):
+        cases = [
+            "Giải bài toán mật mã chữ số SEND + MORE = MONEY.",
+            "Cho tập sự kiện facts = ['A', 'B'] và tập luật Horn: R1: A & B -> C; R2: C -> D. Chứng minh 'D' bằng suy diễn lùi.",
+            "Tô màu bản đồ bằng SimpleAI CSP cho các vùng ['WA', 'NT', 'SA'] với các màu ['Do', 'Xanh', 'Vang'], các cặp vùng kề nhau: [('WA', 'NT'), ('NT', 'SA'), ('WA', 'SA')] với MRV + LCV.",
+            "Cho đồ thị có hướng với các cạnh [('A', 'B', 2), ('B', 'G', 3), ('A', 'G', 7)], tìm đường từ 'A' đến 'G' bằng SimpleAI với thuật toán A* và heuristic {'A': 4, 'B': 2, 'G': 0}.",
+            "Cho hai tập mờ A = {'x1': '0.2', 'x2': '0.8'} và B = {'x1': '0.5', 'x2': '0.4'}, tính giao.",
+        ]
+        for prompt in cases:
+            with self.subTest(prompt=prompt):
+                res = process_request(prompt, action_mode="instant")
+                self.assertTrue(res.verified_ok, f"Failed: {prompt} -> {res.error_detail}")
+                self.assertEqual(res.validation_status, "verified")
+
+    def test_api_contract_checker_and_semantic_none_output_repair(self):
+        wrong_name_code = (
+            "class WrongNode:\n"
+            "    def __init__(self, s):\n        self.s = s\n\n"
+            "def main():\n    print(123)\n\n"
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        err = check_api_contract(
+            wrong_name_code,
+            "Viết lớp NutTimKiem có phương thức f_cost(self) và truy_vet_duong_di(self).",
+        )
+        self.assertIn("class NutTimKiem", err)
+        self.assertIn("f_cost", err)
+
+        forgot_return = (
+            "def tinh_tong(a, b):\n    kq = a + b\n\n"
+            "def main():\n    print(tinh_tong(3, 4))\n\n"
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        sem_err = validate_shadow_output(forgot_return, "None\n", "Viết hàm tinh_tong(a, b)")
+        self.assertIn("return", sem_err)
+
+        repaired = (
+            "def tinh_tong(a, b):\n    return a + b\n\n"
+            "def main():\n    print(tinh_tong(3, 4))\n\n"
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        with patch.object(
+            brain_router,
+            "_post_json",
+            side_effect=[
+                {},
+                {"done": True, "response": forgot_return},
+                {},
+                {"done": True, "response": repaired},
+            ],
+        ):
+            res = process_request(
+                "# Viết hàm tinh_tong(a, b) trả về a + b",
+                action_mode="local",
+                allow_local=True,
+                allow_shadow_exec=True,
+            )
+        self.assertEqual(res.validation_status, "runtime_checked")
+        self.assertEqual(res.stdout_preview, "7")
+
+    def test_scorched_earth_purge_ollama_wipes_all_folders_and_processes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            local_dir = root / "local"
+            home_dir = root / "home"
+            for d in (
+                local_dir / "Programs" / "Ollama",
+                local_dir / "Ollama",
+                local_dir / "PylanceHelperLocalAI",
+                home_dir / ".ollama" / "models",
+            ):
+                d.mkdir(parents=True)
+                (d / "dummy.dat").write_text("trace", encoding="utf-8")
+            unins = local_dir / "Programs" / "Ollama" / "unins000.exe"
+            unins.write_text("exe", encoding="utf-8")
+
+            with patch.dict("os.environ", {"LOCALAPPDATA": str(local_dir), "APPDATA": str(root / "roaming")}), \
+                    patch.object(Path, "home", return_value=home_dir), \
+                    patch.object(local_ai, "find_ollama", return_value=local_dir / "Programs" / "Ollama" / "ollama.exe"), \
+                    patch.object(local_ai, "_stop_ollama_processes") as stop_proc, \
+                    patch.object(local_ai, "_scrub_ollama_windows_traces") as scrub_reg, \
+                    patch.object(local_ai, "_run") as run_cmd:
+                local_ai.uninstall_local_ai(purge_all=True)
+
+            self.assertGreaterEqual(stop_proc.call_count, 2)
+            scrub_reg.assert_called_once()
+            run_cmd.assert_called_once()
+            self.assertFalse((local_dir / "Programs" / "Ollama").exists())
+            self.assertFalse((local_dir / "Ollama").exists())
+            self.assertFalse((local_dir / "PylanceHelperLocalAI").exists())
+            self.assertFalse((home_dir / ".ollama").exists())
 
 
 if __name__ == "__main__":

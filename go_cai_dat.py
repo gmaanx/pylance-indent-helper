@@ -275,7 +275,7 @@ def _keep_local_runtime(root: Path, config: dict) -> None:
 
 
 def _remove_local_ai_for_full_uninstall(root: Path) -> None:
-    """Remove Alt+5 local AI config, configured Ollama model, and user-installed Ollama."""
+    """Scorched-earth removal of Alt+5 local AI config, models, Ollama app, logs, and registry traces."""
     script_dir = str(Path(__file__).resolve().parent)
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
@@ -284,9 +284,48 @@ def _remove_local_ai_for_full_uninstall(root: Path) -> None:
     except ImportError:
         local_dir = root.parent.parent / "PylanceHelperLocalAI"
         if local_dir.exists():
-            _remove_tree(local_dir, root.parent.parent)
+            shutil.rmtree(local_dir, ignore_errors=True)
         return
-    uninstall_local_ai(remove_configured_model=True, remove_user_ollama=True)
+    uninstall_local_ai(remove_configured_model=True, remove_user_ollama=True, purge_all=True)
+
+
+def _scrub_all_ide_extension_dirs() -> None:
+    for ide_name in (".vscode", ".antigravity-ide", ".antigravity", ".cursor", ".windsurf"):
+        ext_root = Path.home() / ide_name / "extensions"
+        if ext_root.is_dir():
+            try:
+                _unregister_extension_from_ide(ext_root)
+            except Exception:
+                pass
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        for app_ide in ("Code", "Antigravity", "Cursor", "Windsurf"):
+            cached = Path(appdata) / app_ide / "CachedExtensionVSIXs"
+            if cached.is_dir():
+                for item in cached.glob("*pylance-indent-helper*"):
+                    try:
+                        item.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+
+def _scrub_temp_and_pth_traces() -> None:
+    try:
+        pth_file = Path(site.getusersitepackages()) / "pylance_helper_pkgs.pth"
+        if pth_file.exists():
+            pth_file.unlink()
+    except Exception:
+        pass
+    try:
+        tmp_dir = Path(tempfile.gettempdir())
+        for pattern in ("pylance_lint_*.py", "pylance_uninst_*.tmp"):
+            for item in tmp_dir.glob(pattern):
+                try:
+                    item.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    except Exception:
+        pass
 
 
 def uninstall_everything(
@@ -319,19 +358,36 @@ def uninstall_everything(
                 for ide in config.get("ides", []):
                     cli = Path(ide["cli"])
                     extension = ide["extension"]
-                    if extension.casefold() not in list_extensions(cli):
-                        continue
-                    run_ide_cli(cli, "--uninstall-extension", extension)
-                    if extension.casefold() in list_extensions(cli):
-                        raise RuntimeError(f"IDE van hien extension {extension}.")
-                manual_extension = config.get("manualExtension", False)
+                    try:
+                        if extension.casefold() not in list_extensions(cli):
+                            continue
+                        run_ide_cli(cli, "--uninstall-extension", extension)
+                        if extension.casefold() in list_extensions(cli):
+                            raise RuntimeError(f"IDE van hien extension {extension}.")
+                    except (RuntimeError, OSError):
+                        if not remove_all:
+                            raise
+                manual_extension = config.get("manualExtension", False) and not remove_all
+                if remove_all:
+                    try:
+                        stop_daemon_processes()
+                    except Exception:
+                        pass
+                    _scrub_all_ide_extension_dirs()
+                    _scrub_temp_and_pth_traces()
             elif uninstall_legacy(root):
                 return False
+            elif remove_all:
+                _scrub_all_ide_extension_dirs()
+                _scrub_temp_and_pth_traces()
             _remove_tree(root, root.parent)
             if remove_all:
-                logs_dir = root.parent.parent / "PylanceHelperLogs"
-                if logs_dir.exists():
-                    shutil.rmtree(logs_dir, ignore_errors=True)
+                for extra_dir in (
+                    root.parent.parent / "PylanceHelperLocalAI",
+                    root.parent.parent / "PylanceHelperLogs",
+                ):
+                    if extra_dir.exists():
+                        shutil.rmtree(extra_dir, ignore_errors=True)
         if remove_all:
             lock_file = root.parent / "PylanceHelper.lock"
             try:

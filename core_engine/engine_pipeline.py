@@ -14,6 +14,7 @@ from .brain_router import (
     select_relevant_skeletons,
 )
 from .cloud_review import review_cloud_draft, syntax_error as _syntax_error
+from .contract_checker import check_api_contract, validate_shadow_output
 from .dual_parser import parse_user_input
 from .golden_skeletons import ALL_SKELETONS, customize_skeleton_with_prompt
 from .offline_solver import OfflineProblemError, solve_offline
@@ -110,6 +111,7 @@ def process_request(
         *,
         editing_existing: bool = False,
         prompt_for_repair: str = "",
+        starter_for_contract: str = "",
         ws_context: str = "",
         skeletons_for_repair: list = None,
     ) -> EngineResponse:
@@ -124,28 +126,43 @@ def process_request(
         if not allow_shadow_exec or not verify_shadow:
             return finish("syntax_checked", tier, code, notes=tuple(notes))
 
-        # Closed-loop Shadow Run & Auto-Heal (up to 2 repair rounds on runtime Traceback/Timeout)
-        run_res = shadow_execute(code, timeout=3.5, working_dir=working_dir)
-        if not run_res.ok:
+        def _evaluate_candidate(cand_code: str):
+            contract_err = (
+                "" if editing_existing
+                else check_api_contract(cand_code, prompt_for_repair or raw_text, starter_for_contract)
+            )
+            res = shadow_execute(cand_code, timeout=3.5, working_dir=working_dir)
+            if not res.ok:
+                return False, res, (res.stderr or res.stdout or "Lỗi khi chạy thử mã Python.")[-1800:]
+            sem_err = validate_shadow_output(
+                cand_code, res.stdout, prompt_for_repair or raw_text, editing_existing=editing_existing,
+            )
+            combined_err = "\n".join(x for x in (contract_err, sem_err) if x)
+            if combined_err:
+                return False, res, combined_err
+            return True, res, ""
+
+        # Closed-loop Shadow Run, API Contract & Semantic Output Auto-Heal (up to 2 repair rounds)
+        passed_all, run_res, issue_detail = _evaluate_candidate(code)
+        if not passed_all and not run_res.ok:
             aggressive = static_auto_heal(code)
             if aggressive != code and not _syntax_error(aggressive):
-                retry_res = shadow_execute(aggressive, timeout=3.5, working_dir=working_dir)
-                if retry_res.ok:
-                    code, run_res = aggressive, retry_res
+                ok_agg, retry_res, retry_issue = _evaluate_candidate(aggressive)
+                if ok_agg or retry_res.ok:
+                    code, passed_all, run_res, issue_detail = aggressive, ok_agg, retry_res, retry_issue
 
         repair_prompt = prompt_for_repair or raw_text
         skels = skeletons_for_repair or []
         best_skel = skels[0] if skels else None
         for _round in range(2):
-            if run_res.ok:
+            if passed_all:
                 break
-            tb_text = (run_res.stderr or run_res.stdout or "Lỗi khi chạy thử mã Python.")[-1800:]
             repaired_candidate = None
             if tier.startswith("tier1_") and allow_cloud:
                 provider_only = tier[6:]
                 sys_p, usr_m = build_context_injected_prompt(
                     repair_prompt, skels, existing_code=code,
-                    error_traceback=tb_text, workspace_context=ws_context,
+                    error_traceback=issue_detail, workspace_context=ws_context,
                 )
                 repaired_candidate = call_tier1_cloud_llm(
                     sys_p, usr_m, diagnostics=diagnostics, provider_id=provider_only, max_attempts=1,
@@ -153,7 +170,7 @@ def process_request(
             elif allow_local:
                 repaired_candidate = call_tier2_local_llm(
                     repair_prompt, best_skel, existing_code=code,
-                    error_traceback=tb_text, workspace_context=ws_context, diagnostics=diagnostics,
+                    error_traceback=issue_detail, workspace_context=ws_context, diagnostics=diagnostics,
                 )
             if repaired_candidate is None:
                 break
@@ -161,16 +178,21 @@ def process_request(
             if _syntax_error(new_code):
                 break
             new_code, _ = _prepare_candidate_code(new_code, editing_existing=editing_existing)
-            new_run = shadow_execute(new_code, timeout=3.5, working_dir=working_dir)
-            code, tier, run_res = new_code, new_tier, new_run
+            new_passed, new_run, new_issue = _evaluate_candidate(new_code)
+            # Keep the repaired version if it passes everything, or fixes a crash without breaking runtime
+            if new_passed or (new_run.ok and not run_res.ok):
+                code, tier, passed_all, run_res, issue_detail = new_code, new_tier, new_passed, new_run, new_issue
+            elif not run_res.ok:
+                code, tier, passed_all, run_res, issue_detail = new_code, new_tier, new_passed, new_run, new_issue
 
         if run_res.ok:
+            extra_note = f" ({issue_detail})" if issue_detail else ""
             return finish(
                 "runtime_checked",
                 tier,
                 code,
                 summary=run_res.summary,
-                notes=(f"Đã chạy kiểm thử ngầm thành công ({run_res.elapsed_sec:.2f}s).",),
+                notes=(f"Đã chạy kiểm thử ngầm thành công ({run_res.elapsed_sec:.2f}s){extra_note}.",),
             )
         tb_short = (run_res.stderr.strip().splitlines()[-1] if run_res.stderr.strip() else "Lỗi runtime khi chạy thử.")
         return finish(
@@ -217,6 +239,7 @@ def process_request(
             candidate,
             editing_existing=editing_existing,
             prompt_for_repair=prompt_text,
+            starter_for_contract=existing_arg,
             ws_context=ws_context,
             skeletons_for_repair=top_skeletons,
         )
@@ -303,6 +326,7 @@ def process_request(
                     candidate,
                     editing_existing=editing_existing,
                     prompt_for_repair=model_prompt,
+                    starter_for_contract=parsed.existing_code if completing_template else "",
                     ws_context=ws_context,
                     skeletons_for_repair=top_skeletons,
                 )

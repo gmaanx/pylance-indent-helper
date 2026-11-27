@@ -4,6 +4,7 @@ import ast
 import re
 
 from .golden_skeletons import strip_accents
+from .offline_natural_vn import parse_natural_vietnamese_problem
 
 _BOARD_3 = r"\(\s*\(\s*[0-8]\s*,\s*[0-8]\s*,\s*[0-8]\s*\)\s*,\s*\(\s*[0-8]\s*,\s*[0-8]\s*,\s*[0-8]\s*\)\s*,\s*\(\s*[0-8]\s*,\s*[0-8]\s*,\s*[0-8]\s*\)\s*\)"
 _PUZZLE = re.compile(
@@ -133,4 +134,4 @@ def read_course_prompt(text):
                 for _ in strip_accents(char)
             ] + [len(text)]
         return _parse_shifts(match, text, offsets)
-    return None
+    return parse_natural_vietnamese_problem(text)

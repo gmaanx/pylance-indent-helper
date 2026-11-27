@@ -20,7 +20,7 @@ Tiện ích Windows hỗ trợ luyện bài Python trong VS Code hoặc Antigrav
      ```
      *(Nếu không truyền `--provider`/`--key`, script vẫn cài đầy đủ Offline + Extension + Ollama theo RAM).*
    - Hoặc chỉ cài **Offline + API Cloud** siêu nhanh (< 10 giây, mặc định cài đủ `simpleai` + `miniKanren` + `sympy`): nhấp đúp [setup_nhanh.bat](setup_nhanh.bat).
-4. Khi cài xong, bấm **Ctrl+Shift+P → Reload Window** trong IDE đang mở để nạp extension (`v1.7.0`).
+4. Khi cài xong, bấm **Ctrl+Shift+P → Reload Window** trong IDE đang mở để nạp extension (`v1.8.0`). Trình cài tự động cài đặt đồng thời cho cả **VS Code** và **Antigravity** (nếu máy có cả hai).
 
 ```powershell
 .\setup_nhanh.bat
@@ -255,7 +255,7 @@ Cập nhật bằng cách chạy lại setup từ bản mới rồi chọn **Rel
 | Offline + API | [setup_nhanh.bat](setup_nhanh.bat) | [go_cai_dat.bat](go_cai_dat.bat) | [go_cai_dat.vbs](go_cai_dat.vbs) |
 | Ollama | [setup_ollama.bat](setup_ollama.bat) | [go_ollama.bat](go_ollama.bat) | [go_ollama.vbs](go_ollama.vbs) |
 
-Các file gỡ ghi nhật ký trong `%LOCALAPPDATA%\PylanceHelperLogs`. File `.vbs` chạy lệnh gỡ ở nền khi nhấp đúp. **Alt+0** (và `go_cai_dat.bat`) mặc định gỡ toàn bộ công cụ từ **Alt+1 đến Alt+5**, gồm Extension IDE, môi trường Python, cấu hình `PylanceHelperLocalAI`, nhật ký và model/ứng dụng Ollama đã cài cho người dùng (có tùy chọn **Chỉ gỡ Alt+1–4** nếu muốn giữ lại Ollama). `go_ollama.bat` dùng khi chỉ muốn gỡ riêng thành phần Ollama. Nếu chỉ cài VSIX thủ công, tải lại IDE sau khi tự gỡ tiện ích cuối cùng trong **Extensions**.
+File `.vbs` chạy lệnh gỡ ở nền khi nhấp đúp. **Alt+0** (và `go_cai_dat.bat` không tham số) thực hiện **xóa sạch dấu vết 100%**: gỡ toàn bộ `Alt+1` đến `Alt+6`, xóa Extension khỏi cả VS Code và Antigravity, dừng toàn bộ tiến trình Ollama, chạy uninstaller ngầm và xóa triệt để `Programs\Ollama`, `%LOCALAPPDATA%\Ollama`, `~/.ollama`, `PylanceHelper`, `PylanceHelperLocalAI`, `PylanceHelperLogs`, shortcut Start Menu/Startup cùng khóa Registry `Run`/`Path`, sau đó **tự động `Reload Window`** để xóa sạch phím tắt khỏi bộ nhớ IDE ngay lập tức. `go_ollama.bat` dùng khi chỉ muốn gỡ nhẹ riêng cấu hình Ollama.
 
 | Hiện tượng | Cách xử lý |
 | --- | --- |

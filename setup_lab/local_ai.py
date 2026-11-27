@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -374,12 +375,158 @@ def _stop_ollama_processes() -> None:
     if sys.platform != "win32":
         return
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    for image in ("ollama app.exe", "ollama.exe"):
+    for image in ("ollama app.exe", "ollama_llama_server.exe", "ollama.exe"):
         subprocess.run(
             ["taskkill", "/F", "/IM", image, "/T"],
             capture_output=True, stdin=subprocess.DEVNULL,
             creationflags=flags, timeout=15, check=False,
         )
+
+
+def _force_rmtree(target: Path) -> None:
+    def _onerror(func, path, _exc_info):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except OSError:
+            pass
+
+    for attempt in range(8):
+        if not target.exists():
+            return
+        shutil.rmtree(target, onerror=_onerror)
+        if not target.exists():
+            return
+        _stop_ollama_processes()
+        time.sleep(0.35)
+
+
+def _scrub_ollama_windows_traces() -> None:
+    if sys.platform != "win32":
+        return
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        start_menu = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        for shortcut in (
+            start_menu / "Ollama.lnk",
+            start_menu / "Startup" / "Ollama.lnk",
+        ):
+            try:
+                shortcut.unlink(missing_ok=True)
+            except OSError:
+                pass
+    try:
+        (Path.home() / "Desktop" / "Ollama.lnk").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    try:
+        import winreg
+    except ImportError:
+        return
+
+    # 1. Remove Ollama auto-start Run registry value
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            try:
+                winreg.DeleteValue(key, "Ollama")
+            except FileNotFoundError:
+                pass
+    except OSError:
+        pass
+
+    # 2. Remove ...\Programs\Ollama from HKCU\Environment\Path
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Environment",
+            0,
+            winreg.KEY_READ | winreg.KEY_SET_VALUE,
+        ) as env_key:
+            raw_path, reg_type = winreg.QueryValueEx(env_key, "Path")
+            if isinstance(raw_path, str) and "ollama" in raw_path.casefold():
+                parts = [p for p in raw_path.split(";") if "programs\\ollama" not in p.replace("/", "\\").casefold()]
+                new_path = ";".join(parts)
+                if new_path != raw_path:
+                    winreg.SetValueEx(env_key, "Path", 0, reg_type, new_path)
+    except OSError:
+        pass
+
+    # 3. Remove leftover per-user ARP Uninstall entry if unins000 left it behind
+    uninstall_root = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_root, 0, winreg.KEY_READ | winreg.KEY_WRITE) as root_key:
+            to_delete: list[str] = []
+            idx = 0
+            while True:
+                try:
+                    sub_name = winreg.EnumKey(root_key, idx)
+                except OSError:
+                    break
+                idx += 1
+                if "ollama" in sub_name.casefold():
+                    to_delete.append(sub_name)
+                    continue
+                try:
+                    with winreg.OpenKey(root_key, sub_name, 0, winreg.KEY_READ) as sub_key:
+                        disp, _ = winreg.QueryValueEx(sub_key, "DisplayName")
+                        if isinstance(disp, str) and disp.strip().casefold() == "ollama":
+                            to_delete.append(sub_name)
+                except OSError:
+                    pass
+            for sub_name in to_delete:
+                try:
+                    winreg.DeleteKey(root_key, sub_name)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def purge_ollama_completely() -> None:
+    """Scorched-earth removal of Ollama processes, models, app binaries, logs, and registry traces."""
+    _stop_ollama_processes()
+    ollama = find_ollama()
+    local_app = os.environ.get("LOCALAPPDATA")
+    default_ollama_dir = Path(local_app).resolve() / "Programs" / "Ollama" if local_app else None
+
+    uninstaller = None
+    if ollama is not None and (ollama.parent / "unins000.exe").is_file():
+        uninstaller = ollama.parent / "unins000.exe"
+    elif default_ollama_dir is not None and (default_ollama_dir / "unins000.exe").is_file():
+        uninstaller = default_ollama_dir / "unins000.exe"
+
+    if uninstaller is not None:
+        try:
+            _run([str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], timeout=300)
+        except RuntimeError:
+            pass
+    elif ollama is not None and shutil.which("winget.exe"):
+        try:
+            _run([
+                _winget(), "uninstall", "--id", OLLAMA_PACKAGE, "--exact",
+                "--accept-source-agreements", "--silent", "--disable-interactivity",
+            ], timeout=300)
+        except RuntimeError:
+            pass
+
+    _stop_ollama_processes()
+    if local_app:
+        local_root = Path(local_app).resolve()
+        for folder in (
+            local_root / "Programs" / "Ollama",
+            local_root / "Ollama",
+            local_root / LOCAL_AI_DIR,
+        ):
+            _force_rmtree(folder)
+    _force_rmtree(Path.home() / ".ollama")
+    _scrub_ollama_windows_traces()
+    print("[OK] Da xoa sach hoan toan Ollama, model, nhat ky va dau vet he thong.", flush=True)
 
 
 def _is_user_local_ollama(ollama: Path) -> bool:
@@ -461,7 +608,15 @@ def _remove_managed_models(
     return models
 
 
-def uninstall_local_ai(*, remove_configured_model: bool = False, remove_user_ollama: bool = False) -> None:
+def uninstall_local_ai(
+    *,
+    remove_configured_model: bool = False,
+    remove_user_ollama: bool = False,
+    purge_all: bool = False,
+) -> None:
+    if purge_all:
+        purge_ollama_completely()
+        return
     path = _state_path()
     with _state_lock(path):
         state = _read_state(path)
@@ -515,7 +670,11 @@ def main() -> int:
         if args.action == "install":
             install_local_ai(args.model, auto_model=args.auto_model)
         elif args.action == "uninstall":
-            uninstall_local_ai(remove_configured_model=args.remove_all, remove_user_ollama=args.remove_all)
+            uninstall_local_ai(
+                remove_configured_model=args.remove_all,
+                remove_user_ollama=args.remove_all,
+                purge_all=args.remove_all,
+            )
         else:
             print(f"[OK] {check_managed_local_ai(args.model)}", flush=True)
     except (ValueError, OSError, RuntimeError) as exc:

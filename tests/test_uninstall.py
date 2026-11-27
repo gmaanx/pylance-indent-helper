@@ -203,7 +203,9 @@ class UninstallTests(unittest.TestCase):
             result, output = self.run_uninstall(remove_all=True)
 
         self.assertTrue(result, output)
-        remove_local.assert_called_once_with(remove_configured_model=True, remove_user_ollama=True)
+        remove_local.assert_called_once_with(
+            remove_configured_model=True, remove_user_ollama=True, purge_all=True,
+        )
         command.assert_called_once_with(cli, "--uninstall-extension", uninstall.EXT_ID)
         self.assertFalse(self.install.exists())
         self.assertFalse(logs_dir.exists())

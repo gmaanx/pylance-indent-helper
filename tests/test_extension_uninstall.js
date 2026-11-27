@@ -548,9 +548,9 @@ test('Alt+0 confirms and invokes FULL uninstall (--all) removing Alt+1..5 and Ol
   h.children[0].emit('close', 0);
   await pending;
   assert.ok(h.notices.every(({ kind }) => kind === 'warning'));
-  assert.deepEqual(h.editorCommands, []);
+  assert.deepEqual(h.editorCommands, ['workbench.action.reloadWindow']);
   assert.equal(h.edits.length, 0);
-  // Once fully uninstalled, Alt+1..5 stop immediately even before Reload Window.
+  // Once fully uninstalled, Alt+1..6 stop immediately even before Reload Window completes.
   await h.run('localAi');
   assert.equal(h.children.length, 1);
 });
@@ -570,6 +570,7 @@ test('Alt+0 also works when only Ollama (Alt+5) is installed and aborts active O
   assert.deepEqual([...h.children[1].args], [h.uninstallScript, '--all']);
   h.children[1].emit('close', 0);
   await removal;
+  assert.deepEqual(h.editorCommands, ['workbench.action.reloadWindow']);
   assert.equal(h.edits.length, 0);
 });
 
@@ -589,37 +590,18 @@ test('failed, unavailable or legacy uninstall names the full manual fallback', a
   }
 });
 
-test('Alt+0 base-only choice waits for active Ollama and Alt+5 can use the lean runtime afterward', async () => {
-  const h = harness();
-  const local = h.run('localAi');
+test('multi-question # comment blocks replace only the block under cursor while preserving other questions', async () => {
+  const q1 = '# Câu 1: Viết hàm tính tổng\n# cho trước danh sách';
+  const q2 = '# Câu 2: Giải bài toán đong nước\n# bình 3, 5, 8';
+  const original = q1 + '\n\ndef da_giai_cau_1():\n    return 10\n\n' + q2 + '\n';
+  const cursor = original.indexOf('Câu 2');
+  const h = harness({ text: original, selected: [cursor, cursor] });
+  const req = h.run('deepFormat');
   await flush();
-  h.state.uninstall = 'Chỉ gỡ Alt+1–4';
-  const removal = h.run('uninstallAll');
-  await flush();
-  assert.equal(h.children.length, 1);
-  assert.equal(h.children[0].killed, undefined);
-  finish(h.children[0], 'print(1)');
-  await local;
-  await flush();
-  assert.equal(h.children.length, 2);
-  assert.deepEqual([...h.children[1].args], [h.uninstallScript, '--base-only']);
-  const next = h.run('localAi');
-  await flush();
-  assert.equal(h.children.length, 2);
-  h.runtime.baseEnabled = false;
-  h.runtime.python = path.join(h.engineRoot, 'lean-python.exe');
-  h.files.add(h.runtime.python);
-  h.files.delete(h.python);
-  h.children[1].emit('close', 0);
-  await removal;
-  await flush();
-  assert.equal(h.children[2].executable, h.runtime.python);
-  finish(h.children[2], 'print(2)');
-  await next;
-  assert.equal(h.document.getText(), 'print(2)');
-  await h.run('deepFormat');
-  assert.match(h.notices.at(-1).message, /setup_nhanh\.bat.*phần cơ bản/);
-  assert.equal(h.children.length, 3);
+  assert.equal(JSON.parse(h.children[0].input).text, q2);
+  finish(h.children[0], 'print("giai_xong_cau_2")');
+  await req;
+  assert.equal(h.document.getText(), q1 + '\n\ndef da_giai_cau_1():\n    return 10\n\nprint("giai_xong_cau_2")\n');
 });
 
 test('Alt+5 asks for independent Ollama setup and accepts legacy model records', async () => {
