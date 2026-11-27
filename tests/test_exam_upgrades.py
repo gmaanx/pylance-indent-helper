@@ -44,11 +44,14 @@ class ExamUpgradeTests(unittest.TestCase):
             self.assertEqual(load_encrypted_credentials(install_dir=root), {})
 
     def test_ram_aware_model_selection(self):
-        with patch.object(local_ai, "detect_ram_gb", return_value=7.9):
-            self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:1.5b")
-        with patch.object(local_ai, "detect_ram_gb", return_value=12.0):
-            self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:3b")
-        with patch.object(local_ai, "detect_ram_gb", return_value=15.8):
+        with patch.object(local_ai, "detect_nvidia_vram_gb", return_value=0.0):
+            with patch.object(local_ai, "detect_ram_gb", return_value=7.9):
+                self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:1.5b")
+            with patch.object(local_ai, "detect_ram_gb", return_value=15.8):
+                self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:3b")
+        with patch.object(local_ai, "detect_nvidia_vram_gb", return_value=8.0), patch.object(
+            local_ai, "detect_ram_gb", return_value=16.0
+        ):
             self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:7b")
 
     def test_new_chapter_8_9_and_oop_skeletons_exist_and_retrieve(self):
@@ -565,6 +568,29 @@ class ExamUpgradeTests(unittest.TestCase):
         r_todo = process_request(starter_41, action_mode="instant")
         self.assertEqual(r_todo.validation_status, "verified")
         self.assertIn("deque", r_todo.code)
+
+        # 7. DLS/IDS, Minimax/Alpha-Beta, AC-3/CSP, K-NN/Bayes, Fuzzy Centroid, Tower of Hanoi (< 0.05s each)
+        extra_prompts = [
+            ("Viết hàm dls(graph, start, goal, limit) và hàm ids(graph, start, goal, max_depth) trên dict.", "ids"),
+            ("Viết hàm minimax(node, is_max, tree, scores) và hàm alpha_beta(node, is_max, tree, scores).", "alpha_beta"),
+            ("Cho miền giá trị domains, viết hàm ac3(domains, neighbors) và hàm backtrack_csp(domains, neighbors).", "ac3"),
+            ("Viết hàm khoang_cach_euclid(p1, p2), hàm knn_predict(train_data, query, k) và hàm dinh_ly_bayes(p_a, p_ba, p_bna).", "knn_predict"),
+            ("Viết hàm hop_mo(a, b), hàm giao_mo(a, b) và hàm giai_mo_trong_tam(fuzzy_num).", "giai_mo_trong_tam"),
+            ("Bài toán Tháp Hà Nội: viết hàm thap_ha_noi(n, coc_nguon, coc_dich, coc_trung_gian) bằng đệ quy.", "thap_ha_noi"),
+        ]
+        for prompt_text, expected_fn in extra_prompts:
+            with self.subTest(expected_fn=expected_fn):
+                res_ex = process_request(prompt_text, action_mode="instant")
+                self.assertEqual(res_ex.validation_status, "verified")
+                self.assertLess(res_ex.elapsed_sec, 0.25)
+                ns_ex = {"__name__": "tex"}
+                exec(compile(res_ex.code, "<tex>", "exec"), ns_ex)
+                self.assertIn(expected_fn, ns_ex)
+
+        # 8. Anti-lag Ollama thread cap & compact KV-cache options
+        opts = brain_router._ollama_perf_options(1200)
+        self.assertEqual(opts["num_ctx"], 2048)
+        self.assertLessEqual(opts["num_thread"], 6)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,6 @@ from .brain_router import (
     build_context_injected_prompt,
     call_tier1_cloud_llm,
     call_tier2_local_llm,
-    review_local_draft,
     select_relevant_skeletons,
 )
 from .cloud_review import review_cloud_draft, syntax_error as _syntax_error
@@ -133,7 +132,7 @@ def process_request(
                 "" if editing_existing
                 else check_api_contract(cand_code, prompt_for_repair or raw_text, starter_for_contract)
             )
-            res = shadow_execute(cand_code, timeout=3.5, working_dir=working_dir)
+            res = shadow_execute(cand_code, timeout=2.5, working_dir=working_dir)
             if not res.ok:
                 tb = (res.stderr or res.stdout or "Lỗi khi chạy thử mã Python.")[-1800:]
                 full_err = f"{contract_err}\n{tb}".strip() if contract_err else tb
@@ -176,7 +175,8 @@ def process_request(
 
         repair_prompt = prompt_for_repair or raw_text
         skels = skeletons_for_repair or []
-        for _round in range(3):
+        max_repairs = 3 if tier.startswith("tier1_") else 2
+        for _round in range(max_repairs):
             if passed_all:
                 break
             base_existing = starter_for_contract if (has_contract_err and not editing_existing) else code
@@ -235,12 +235,6 @@ def process_request(
     if parsed.mode == "cfg":
         return finish("unsupported", "config", error="Nhập cấu hình và API key qua nhap_api_key.bat, tránh đặt trong mã nguồn.")
 
-    ws_context = collect_workspace_context(raw_text, file_path=file_path, notebook_context=notebook_context)
-    query_for_rag = parsed.prompt_text or raw_text
-    top_skeletons = select_relevant_skeletons(query_for_rag, top_k=2, for_local_model=False)
-    local_skeletons = select_relevant_skeletons(query_for_rag, top_k=1, for_local_model=True)
-    best_skeleton = local_skeletons[0] if local_skeletons else None
-    rag_fallback_skeleton = top_skeletons[0] if top_skeletons else None
     completing_template = (
         bool(parsed.existing_code)
         and action_mode != "self_fix"
@@ -248,6 +242,37 @@ def process_request(
         and is_starter_template(parsed.existing_code)
     )
     editing_existing = bool(parsed.existing_code) and not completing_template
+
+    # Fast-path Offline Exact Solvers (< 0.01s, zero disk scan or BM25 overhead!)
+    offline_error: Optional[OfflineProblemError] = None
+    if action_mode != "local":
+        if parsed.mode in ("structured", "dsl") and parsed.existing_code:
+            return finish(
+                "invalid", "offline_solver",
+                error="Chọn riêng đặc tả bài toán để chạy. Đặc tả này còn kèm nội dung ngoài yêu cầu.",
+            )
+        if not parsed.existing_code or completing_template:
+            try:
+                solution = solve_offline(parsed.prompt_text or raw_text, parsed.target_skeleton_id)
+            except OfflineProblemError as exc:
+                if not completing_template:
+                    if parsed.mode in ("structured", "dsl") or exc.status in ("invalid", "limit"):
+                        return finish(exc.status, "offline_solver", error=str(exc))
+                    offline_error = exc
+            else:
+                if solution is not None:
+                    if not completing_template or check_api_contract(solution.code, raw_text, parsed.existing_code) == "":
+                        return finish(
+                            solution.validation_status, f"offline_{solution.problem_type}", solution.code,
+                            summary=solution.summary, notes=(solution.summary, *solution.diagnostics),
+                        )
+
+    ws_context = collect_workspace_context(raw_text, file_path=file_path, notebook_context=notebook_context)
+    query_for_rag = parsed.prompt_text or raw_text
+    top_skeletons = select_relevant_skeletons(query_for_rag, top_k=2, for_local_model=False)
+    local_skeletons = select_relevant_skeletons(query_for_rag, top_k=1, for_local_model=True)
+    best_skeleton = local_skeletons[0] if local_skeletons else None
+    rag_fallback_skeleton = top_skeletons[0] if top_skeletons else None
 
     if action_mode == "local":
         if not allow_local:
@@ -261,9 +286,6 @@ def process_request(
         if candidate is None:
             error = diagnostics[-1] if diagnostics else "Ollama chưa tạo được đề xuất."
             return finish("unsupported", "tier2_ollama", error=error)
-        if allow_shadow_exec and verify_shadow and not editing_existing and best_skeleton is None:
-            cand_code, cand_tier = candidate
-            candidate = (review_local_draft(prompt_text, cand_code), cand_tier)
         return finish_model(
             candidate,
             editing_existing=editing_existing,
@@ -272,29 +294,6 @@ def process_request(
             ws_context=ws_context,
             skeletons_for_repair=top_skeletons,
         )
-
-    if parsed.mode in ("structured", "dsl") and parsed.existing_code:
-        return finish(
-            "invalid", "offline_solver",
-            error="Chọn riêng đặc tả bài toán để chạy. Đặc tả này còn kèm nội dung ngoài yêu cầu.",
-        )
-
-    offline_error: Optional[OfflineProblemError] = None
-    if not parsed.existing_code or completing_template:
-        try:
-            solution = solve_offline(parsed.prompt_text or raw_text, parsed.target_skeleton_id)
-        except OfflineProblemError as exc:
-            if not completing_template:
-                if parsed.mode in ("structured", "dsl") or exc.status in ("invalid", "limit"):
-                    return finish(exc.status, "offline_solver", error=str(exc))
-                offline_error = exc
-        else:
-            if solution is not None:
-                if not completing_template or check_api_contract(solution.code, raw_text, parsed.existing_code) == "":
-                    return finish(
-                        solution.validation_status, f"offline_{solution.problem_type}", solution.code,
-                        summary=solution.summary, notes=(solution.summary, *solution.diagnostics),
-                    )
 
     syntax_problem = _syntax_error(parsed.existing_code) if parsed.mode == "self_fix" else ""
     runtime_problem = ""
@@ -352,9 +351,6 @@ def process_request(
                     workspace_context=ws_context,
                     diagnostics=diagnostics,
                 )
-                if candidate is not None and allow_shadow_exec and verify_shadow and not editing_existing and not detected_issue and best_skeleton is None:
-                    cand_code, cand_tier = candidate
-                    candidate = (review_local_draft(model_prompt, cand_code), cand_tier)
             if candidate is not None:
                 return finish_model(
                     candidate,

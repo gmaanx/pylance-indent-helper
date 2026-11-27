@@ -485,7 +485,7 @@ def verify_candidate_semantics(
     *,
     editing_existing: bool = False,
     working_dir: Optional[str] = None,
-    timeout: float = 2.8,
+    timeout: float = 1.8,
 ) -> str:
     """
     Run deep static + dynamic semantic & boundary verification in an isolated subprocess.

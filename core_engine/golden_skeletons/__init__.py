@@ -148,11 +148,14 @@ class BM25SkeletonRetriever:
     def __init__(self, skeletons: Dict[str, Dict[str, Any]]) -> None:
         self.skeletons = skeletons
         self.doc_tokens: Dict[str, List[str]] = {}
+        self.doc_tf_maps: Dict[str, Dict[str, int]] = {}
         self.doc_freqs: Dict[str, int] = {}
         self.avg_dl = 1.0
-        self._build_index()
+        self._built = False
 
     def _build_index(self) -> None:
+        if self._built:
+            return
         total_len = 0
         for sid, item in self.skeletons.items():
             raw_text = " ".join([
@@ -166,11 +169,16 @@ class BM25SkeletonRetriever:
             kw_tokens = tokenize_query(" ".join(item.get("keywords", [])))
             all_toks = tokens + kw_tokens * 3
             self.doc_tokens[sid] = all_toks
+            tf_map: Dict[str, int] = {}
+            for tok in all_toks:
+                tf_map[tok] = tf_map.get(tok, 0) + 1
+            self.doc_tf_maps[sid] = tf_map
             total_len += len(all_toks)
-            for ut in set(all_toks):
+            for ut in tf_map:
                 self.doc_freqs[ut] = self.doc_freqs.get(ut, 0) + 1
         if self.skeletons:
             self.avg_dl = total_len / len(self.skeletons)
+        self._built = True
 
     def retrieve(
         self,
@@ -178,6 +186,8 @@ class BM25SkeletonRetriever:
         top_k: int = 2,
         category_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        if not self._built:
+            self._build_index()
         q_tokens = tokenize_query(query)
         q_lower = strip_accents(query).lower()
         n_docs = len(self.skeletons)
@@ -191,9 +201,7 @@ class BM25SkeletonRetriever:
             d_toks = self.doc_tokens[sid]
             dl = len(d_toks)
             score = 0.0
-            tf_map: Dict[str, int] = {}
-            for t in d_toks:
-                tf_map[t] = tf_map.get(t, 0) + 1
+            tf_map = self.doc_tf_maps[sid]
 
             for qt in q_tokens:
                 tf = tf_map.get(qt, 0)

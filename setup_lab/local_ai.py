@@ -55,11 +55,41 @@ def detect_ram_gb() -> float:
     return 8.0
 
 
+def detect_nvidia_vram_gb() -> float:
+    """Return dedicated NVIDIA GPU VRAM in GB if available, else 0.0 (fast, hidden, zero-lag)."""
+    nvsmi = shutil.which("nvidia-smi")
+    if not nvsmi:
+        return 0.0
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+    try:
+        proc = subprocess.run(
+            [nvsmi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            stdin=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return 0.0
+        vals = [float(line.strip()) / 1024.0 for line in proc.stdout.splitlines() if line.strip()]
+        return max(vals) if vals else 0.0
+    except Exception:
+        return 0.0
+
+
 def recommend_model_for_machine() -> str:
+    """
+    GPU- and RAM-aware model selector:
+    - Dedicated NVIDIA GPU (>= 5.5 GB VRAM) + >= 14 GB RAM -> 7b (fast GPU inference)
+    - CPU-only >= 11.5 GB RAM -> 3b (fast 4-8s response, zero UI lag)
+    - Weak school lab PC (< 11.5 GB RAM) -> 1.5b (ultra-fast 2-4s response, < 1.2 GB RAM)
+    """
     ram_gb = detect_ram_gb()
-    if ram_gb >= 14.5:
+    vram_gb = detect_nvidia_vram_gb()
+    if vram_gb >= 5.5 and ram_gb >= 14.0:
         return PRO_MODEL
-    if ram_gb >= 10.0:
+    if ram_gb >= 11.5:
         return BALANCED_MODEL
     return DEFAULT_MODEL
 

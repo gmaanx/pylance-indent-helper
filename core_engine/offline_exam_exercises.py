@@ -258,6 +258,76 @@ def parse_exam_coding_exercise(text: str) -> Optional[Dict[str, Any]]:
             "ig_fn": ig_fn,
         }
 
+    # 9. Bai 3.3: DLS & IDS on graph dict
+    dls_fn = _find_requested_func_name(folded, ("dls", "depth_limited_search", "tim_kiem_gioi_han_do_sau"))
+    ids_fn = _find_requested_func_name(folded, ("ids", "iterative_deepening_search", "tim_kiem_sau_dan"))
+    if (dls_fn or ids_fn) and "graph" in folded and "start" in folded and "goal" in folded:
+        sample_graph = _extract_named_dict_literal(cleaned, "graph")
+        return {
+            "type": "exam_graph_dls_ids",
+            "dls_fn": dls_fn,
+            "ids_fn": ids_fn,
+            "graph": sample_graph,
+        }
+
+    # 10. Bai 5.1: Minimax & Alpha-Beta Pruning on game tree
+    mm_fn = _find_requested_func_name(folded, ("minimax",))
+    ab_fn = _find_requested_func_name(folded, ("alpha_beta", "alphabeta"))
+    if (mm_fn or ab_fn) and not re.search(r"\b(?:tictactoe|tic-tac-toe|caro|nim)\b", folded):
+        sample_tree = _extract_named_dict_literal(cleaned, "tree")
+        sample_scores = _extract_named_literal(cleaned, ("scores", "values", "utilities", "leaf_values"), "{", "}")
+        return {
+            "type": "exam_minimax_alphabeta",
+            "mm_fn": mm_fn,
+            "ab_fn": ab_fn,
+            "tree": sample_tree if isinstance(sample_tree, dict) else None,
+            "scores": sample_scores if isinstance(sample_scores, dict) else None,
+        }
+
+    # 11. Bai 5.2: Pure-Python CSP AC-3 & Backtracking
+    ac3_fn = _find_requested_func_name(folded, ("ac3", "arc_consistency_3", "phu_hop_cung"))
+    bt_csp_fn = _find_requested_func_name(folded, ("backtrack_csp", "giai_csp"))
+    if (ac3_fn or bt_csp_fn) and "domains" in folded:
+        return {
+            "type": "exam_csp_ac3_backtrack",
+            "ac3_fn": ac3_fn,
+            "bt_csp_fn": bt_csp_fn,
+        }
+
+    # 12. Bai 6.2 / Chuong 9: K-NN Classifier & Bayes Theorem
+    euclid_fn = _find_requested_func_name(folded, ("khoang_cach_euclid", "euclidean_distance", "euclid_distance"))
+    knn_fn = _find_requested_func_name(folded, ("knn_predict", "phan_loai_knn", "du_doan_knn"))
+    bayes_fn = _find_requested_func_name(folded, ("dinh_ly_bayes", "tinh_bayes", "bayes_posterior"))
+    if knn_fn or bayes_fn:
+        return {
+            "type": "exam_knn_bayes",
+            "euclid_fn": euclid_fn,
+            "knn_fn": knn_fn,
+            "bayes_fn": bayes_fn,
+        }
+
+    # 13. Chuong 9: Pure-Python Fuzzy Set Operations & Centroid Defuzzification
+    hop_mo_fn = _find_requested_func_name(folded, ("hop_mo", "fuzzy_union"))
+    giao_mo_fn = _find_requested_func_name(folded, ("giao_mo", "fuzzy_intersection"))
+    bu_mo_fn = _find_requested_func_name(folded, ("phan_bu_mo", "fuzzy_complement"))
+    centroid_fn = _find_requested_func_name(folded, ("giai_mo_trong_tam", "centroid_defuzzification", "giai_mo_centroid"))
+    if centroid_fn or (hop_mo_fn and giao_mo_fn):
+        return {
+            "type": "exam_fuzzy_centroid",
+            "hop_mo_fn": hop_mo_fn,
+            "giao_mo_fn": giao_mo_fn,
+            "bu_mo_fn": bu_mo_fn,
+            "centroid_fn": centroid_fn,
+        }
+
+    # 14. Bai 1.x / 3.x: Pure-Python Tower of Hanoi recursion
+    hanoi_fn = _find_requested_func_name(folded, ("thap_ha_noi", "tower_of_hanoi", "hanoi"))
+    if hanoi_fn and ("ha noi" in folded or "hanoi" in folded):
+        return {
+            "type": "exam_hanoi_recursion",
+            "hanoi_fn": hanoi_fn,
+        }
+
     return None
 
 
@@ -962,6 +1032,400 @@ if __name__ == "__main__":
     )
 
 
+def _solve_exam_graph_dls_ids(problem: Dict[str, Any]):
+    from .offline_solver import OfflineSolution
+
+    dls_fn = problem.get("dls_fn") or "dls"
+    ids_fn = problem.get("ids_fn")
+    sample_graph = problem.get("graph") or {
+        "A": ["B", "C"],
+        "B": ["D", "E"],
+        "C": ["F"],
+        "D": [],
+        "E": ["F"],
+        "F": [],
+    }
+    nodes = list(sample_graph.keys())
+    s_node = nodes[0] if nodes else "A"
+    g_node = nodes[-1] if len(nodes) >= 2 else s_node
+
+    parts = [
+        f'''from __future__ import annotations
+
+
+def {dls_fn}(graph: dict, start, goal, limit: int):
+    """Tìm kiếm giới hạn độ sâu (Depth-Limited Search). Trả về list đường đi hoặc None."""
+    if limit < 0:
+        return None
+    if start not in graph and not any(start in v for v in graph.values()):
+        return None
+
+    def _rec(curr, depth_left, path_set):
+        if curr == goal:
+            return [curr]
+        if depth_left == 0:
+            return None
+        for nb in graph.get(curr, []):
+            if nb not in path_set:
+                sub = _rec(nb, depth_left - 1, path_set | {{nb}})
+                if sub is not None:
+                    return [curr] + sub
+        return None
+
+    return _rec(start, limit, {{start}})
+'''
+    ]
+    main_calls = []
+    if problem.get("dls_fn"):
+        main_calls.append(f'    print("DLS (limit=2):", {dls_fn}(graph, {s_node!r}, {g_node!r}, 2))')
+    if ids_fn:
+        parts.append(
+            f'''
+
+def {ids_fn}(graph: dict, start, goal, max_depth: int = 20):
+    """Tìm kiếm sâu dần (Iterative Deepening Search) từ độ sâu 0 đến max_depth."""
+    for depth in range(max_depth + 1):
+        path = {dls_fn}(graph, start, goal, depth)
+        if path is not None:
+            return path
+    return None
+'''
+        )
+        main_calls.append(f'    print("IDS (max_depth=5):", {ids_fn}(graph, {s_node!r}, {g_node!r}, 5))')
+
+    parts.append(
+        f"\n\ndef main() -> None:\n    graph = {sample_graph!r}\n"
+        + "\n".join(main_calls)
+        + '\n\n\nif __name__ == "__main__":\n    main()\n'
+    )
+    return OfflineSolution(
+        "exam_graph_dls_ids",
+        "".join(parts),
+        "Đã cài đặt tìm kiếm giới hạn độ sâu (DLS) và/hoặc sâu dần (IDS) trên đồ thị từ điển.",
+        ("Kiểm tra tập đỉnh trên nhánh hiện tại để tránh chu trình mà vẫn bảo toàn tính tối ưu theo độ sâu.",),
+    )
+
+
+def _solve_exam_minimax_alphabeta(problem: Dict[str, Any]):
+    from .offline_solver import OfflineSolution
+
+    mm_fn = problem.get("mm_fn")
+    ab_fn = problem.get("ab_fn")
+    sample_tree = problem.get("tree") or {
+        "Root": ["B1", "B2"],
+        "B1": ["C1", "C2"],
+        "B2": ["C3", "C4"],
+    }
+    sample_scores = problem.get("scores") or {"C1": 3, "C2": 12, "C3": 8, "C4": 2}
+    root_name = next(iter(sample_tree.keys()), "Root")
+
+    parts = ["from __future__ import annotations\n"]
+    main_calls = []
+    if mm_fn:
+        parts.append(
+            f'''
+
+def {mm_fn}(node, is_maximizing: bool, tree: dict, scores: dict) -> float:
+    """Thuật toán Minimax trên cây trò chơi biểu diễn bằng dict."""
+    if node in scores or node not in tree or not tree[node]:
+        return scores[node]
+    if is_maximizing:
+        return max({mm_fn}(child, False, tree, scores) for child in tree[node])
+    return min({mm_fn}(child, True, tree, scores) for child in tree[node])
+'''
+        )
+        main_calls.append(f'    print("Giá trị Minimax tại gốc:", {mm_fn}({root_name!r}, True, tree, scores))')
+
+    if ab_fn:
+        parts.append(
+            f'''
+
+def {ab_fn}(
+    node,
+    is_maximizing: bool,
+    tree: dict,
+    scores: dict,
+    alpha: float = float("-inf"),
+    beta: float = float("inf"),
+) -> float:
+    """Thuật toán Cắt tỉa Alpha-Beta trên cây trò chơi biểu diễn bằng dict."""
+    if node in scores or node not in tree or not tree[node]:
+        return scores[node]
+    if is_maximizing:
+        best = float("-inf")
+        for child in tree[node]:
+            best = max(best, {ab_fn}(child, False, tree, scores, alpha, beta))
+            alpha = max(alpha, best)
+            if alpha >= beta:
+                break
+        return best
+    best = float("inf")
+    for child in tree[node]:
+        best = min(best, {ab_fn}(child, True, tree, scores, alpha, beta))
+        beta = min(beta, best)
+        if alpha >= beta:
+            break
+    return best
+'''
+        )
+        main_calls.append(f'    print("Giá trị Alpha-Beta tại gốc:", {ab_fn}({root_name!r}, True, tree, scores))')
+
+    parts.append(
+        f"\n\ndef main() -> None:\n    tree = {sample_tree!r}\n    scores = {sample_scores!r}\n"
+        + "\n".join(main_calls)
+        + '\n\n\nif __name__ == "__main__":\n    main()\n'
+    )
+    return OfflineSolution(
+        "exam_minimax_alphabeta",
+        "".join(parts),
+        "Đã cài đặt Minimax và/hoặc Cắt tỉa Alpha-Beta trên cây trò chơi.",
+        ("Cắt nhánh chuẩn khi alpha >= beta.",),
+    )
+
+
+def _solve_exam_csp_ac3_backtrack(problem: Dict[str, Any]):
+    from .offline_solver import OfflineSolution
+
+    ac3_fn = problem.get("ac3_fn") or "_ac3_internal"
+    bt_fn = problem.get("bt_csp_fn")
+    parts = [
+        f'''from __future__ import annotations
+
+from collections import deque
+
+
+def {ac3_fn}(domains: dict[str, list], neighbors: dict[str, list[str]], constraint_fn=None) -> bool:
+    """Thuật toán AC-3 thu hẹp miền giá trị; trả về False nếu phát hiện miền rỗng (vô nghiệm)."""
+    pred = constraint_fn or (lambda u, x, v, y: x != y)
+    queue = deque((xi, xj) for xi, nbs in neighbors.items() for xj in nbs)
+
+    while queue:
+        xi, xj = queue.popleft()
+        revised = False
+        new_dom = []
+        for x in domains[xi]:
+            if any(pred(xi, x, xj, y) for y in domains[xj]):
+                new_dom.append(x)
+            else:
+                revised = True
+        if revised:
+            domains[xi] = new_dom
+            if not new_dom:
+                return False
+            for xk in neighbors.get(xi, []):
+                if xk != xj:
+                    queue.append((xk, xi))
+    return True
+'''
+    ]
+    main_calls = [
+        '    domains = {"WA": ["Do", "Xanh"], "NT": ["Do"], "SA": ["Do", "Xanh", "Vang"]}',
+        '    neighbors = {"WA": ["NT", "SA"], "NT": ["WA", "SA"], "SA": ["WA", "NT"]}',
+    ]
+    if problem.get("ac3_fn"):
+        main_calls.append(f'    hop_le = {ac3_fn}(domains, neighbors)')
+        main_calls.append('    print("AC-3 hợp lệ:", hop_le, "| Miền sau khi thu hẹp:", domains)')
+
+    if bt_fn:
+        parts.append(
+            f'''
+
+def {bt_fn}(domains: dict[str, list], neighbors: dict[str, list[str]], constraint_fn=None):
+    """Giải CSP bằng Quay lui kết hợp MRV."""
+    pred = constraint_fn or (lambda u, x, v, y: x != y)
+    dom_copy = {{k: list(v) for k, v in domains.items()}}
+    if not {ac3_fn}(dom_copy, neighbors, pred):
+        return None
+
+    assignment: dict[str, object] = {{}}
+
+    def _bt():
+        if len(assignment) == len(dom_copy):
+            return dict(assignment)
+        unassigned = [v for v in dom_copy if v not in assignment]
+        var = min(unassigned, key=lambda v: len(dom_copy[v]))
+        for val in dom_copy[var]:
+            if all(pred(var, val, nb, assignment[nb]) for nb in neighbors.get(var, []) if nb in assignment):
+                assignment[var] = val
+                res = _bt()
+                if res is not None:
+                    return res
+                del assignment[var]
+        return None
+
+    return _bt()
+'''
+        )
+        main_calls.append(f'    print("Nghiệm CSP:", {bt_fn}(domains, neighbors))')
+
+    parts.append("\n\ndef main() -> None:\n" + "\n".join(main_calls) + '\n\n\nif __name__ == "__main__":\n    main()\n')
+    return OfflineSolution(
+        "exam_csp_ac3_backtrack",
+        "".join(parts),
+        "Đã cài đặt AC-3 và/hoặc Backtracking CSP Python thuần.",
+        ("Kiểm tra đầy đủ tính phù hợp cung và chọn biến MRV.",),
+    )
+
+
+def _solve_exam_knn_bayes(problem: Dict[str, Any]):
+    from .offline_solver import OfflineSolution
+
+    euclid_fn = problem.get("euclid_fn") or "_euclid_dist"
+    knn_fn = problem.get("knn_fn")
+    bayes_fn = problem.get("bayes_fn")
+    parts = ["from __future__ import annotations\n\nimport math\nfrom collections import Counter\n"]
+    main_calls = []
+
+    if knn_fn or problem.get("euclid_fn"):
+        parts.append(
+            f'''
+
+def {euclid_fn}(p1: list[float], p2: list[float]) -> float:
+    """Tính khoảng cách Euclid giữa 2 điểm nhiều chiều."""
+    return math.sqrt(sum((a - b) ** 2 for a, b in zip(p1, p2)))
+'''
+        )
+    if knn_fn:
+        parts.append(
+            f'''
+
+def {knn_fn}(train_data: list[tuple[list[float], str]], query: list[float], k: int = 3) -> str:
+    """Phân loại điểm dữ liệu query bằng thuật toán K láng giềng gần nhất (K-NN)."""
+    if not train_data or k <= 0:
+        raise ValueError("Tập huấn luyện không được rỗng và k > 0.")
+    ranked = sorted((({euclid_fn}(x, query), idx, label) for idx, (x, label) in enumerate(train_data)))
+    top_k = [label for _, _, label in ranked[: min(k, len(ranked))]]
+    counts = Counter(top_k)
+    max_votes = max(counts.values())
+    # Ưu tiên lớp có nhiều phiếu nhất; nếu hòa phiếu thì chọn lớp của láng giềng gần nhất
+    for label in top_k:
+        if counts[label] == max_votes:
+            return label
+    return top_k[0]
+'''
+        )
+        main_calls.extend([
+            '    train = [([1.0, 2.0], "A"), ([1.5, 1.8], "A"), ([5.0, 8.0], "B"), ([6.0, 9.0], "B")]',
+            f'    print("Dự đoán K-NN (k=3) cho [1.2, 1.9]:", {knn_fn}(train, [1.2, 1.9], k=3))',
+        ])
+
+    if bayes_fn:
+        parts.append(
+            f'''
+
+def {bayes_fn}(p_a: float, p_b_given_a: float, p_b_given_not_a: float) -> float:
+    """Tính xác suất hậu nghiệm P(A | B) theo Định lý Bayes."""
+    p_b = p_b_given_a * p_a + p_b_given_not_a * (1.0 - p_a)
+    if p_b == 0.0:
+        return 0.0
+    return float((p_b_given_a * p_a) / p_b)
+'''
+        )
+        main_calls.append(f'    print(f"Xác suất hậu nghiệm Bayes P(Bệnh | Dương tính): {{{bayes_fn}(0.01, 0.99, 0.05):.6f}}")')
+
+    parts.append("\n\ndef main() -> None:\n" + "\n".join(main_calls) + '\n\n\nif __name__ == "__main__":\n    main()\n')
+    return OfflineSolution(
+        "exam_knn_bayes",
+        "".join(parts),
+        "Đã cài đặt K-NN và/hoặc Định lý Bayes Python thuần.",
+        ("Xử lý chặt chẽ trường hợp hòa phiếu trong K-NN và mẫu số bằng 0 trong Bayes.",),
+    )
+
+
+def _solve_exam_fuzzy_centroid(problem: Dict[str, Any]):
+    from .offline_solver import OfflineSolution
+
+    hop_fn = problem.get("hop_mo_fn") or "hop_mo"
+    giao_fn = problem.get("giao_mo_fn") or "giao_mo"
+    bu_fn = problem.get("bu_mo_fn") or "phan_bu_mo"
+    cent_fn = problem.get("centroid_fn") or "giai_mo_trong_tam"
+
+    code = f'''from __future__ import annotations
+
+
+def {hop_fn}(a: dict, b: dict) -> dict:
+    """Hợp hai tập mờ: mu_(A u B)(x) = max(mu_A(x), mu_B(x))."""
+    keys = list(dict.fromkeys(list(a.keys()) + list(b.keys())))
+    return {{x: max(float(a.get(x, 0.0)), float(b.get(x, 0.0))) for x in keys}}
+
+
+def {giao_fn}(a: dict, b: dict) -> dict:
+    """Giao hai tập mờ: mu_(A n B)(x) = min(mu_A(x), mu_B(x))."""
+    keys = list(dict.fromkeys(list(a.keys()) + list(b.keys())))
+    return {{x: min(float(a.get(x, 0.0)), float(b.get(x, 0.0))) for x in keys}}
+
+
+def {bu_fn}(a: dict) -> dict:
+    """Phần bù tập mờ: mu_(~A)(x) = 1 - mu_A(x)."""
+    return {{x: round(1.0 - float(mu), 10) for x, mu in a.items()}}
+
+
+def {cent_fn}(fuzzy_num: dict) -> float:
+    """Giải mờ theo phương pháp Trọng tâm (Centroid): sum(x * mu(x)) / sum(mu(x))."""
+    denom = sum(float(mu) for mu in fuzzy_num.values())
+    if denom == 0.0:
+        return 0.0
+    numer = sum(float(x) * float(mu) for x, mu in fuzzy_num.items())
+    return float(numer / denom)
+
+
+def main() -> None:
+    A = {{10: 0.2, 20: 0.6, 30: 1.0}}
+    B = {{10: 0.5, 20: 0.4, 30: 0.8}}
+    print("Hợp mờ A u B:", {hop_fn}(A, B))
+    print("Giao mờ A n B:", {giao_fn}(A, B))
+    print("Phần bù ~A:", {bu_fn}(A))
+    print(f"Giải mờ trọng tâm Centroid(A): {{{cent_fn}(A):.4f}}")
+
+
+if __name__ == "__main__":
+    main()
+'''
+    return OfflineSolution(
+        "exam_fuzzy_centroid",
+        code,
+        "Đã cài đặt phép toán tập mờ và giải mờ trọng tâm (Centroid).",
+        ("An toàn với tổng độ thuộc bằng 0.",),
+    )
+
+
+def _solve_exam_hanoi_recursion(problem: Dict[str, Any]):
+    from .offline_solver import OfflineSolution
+
+    hanoi_fn = problem["hanoi_fn"]
+    code = f'''from __future__ import annotations
+
+
+def {hanoi_fn}(n: int, coc_nguon: str = "A", coc_dich: str = "C", coc_trung_gian: str = "B") -> list[tuple[str, str]]:
+    """Giải bài toán Tháp Hà Nội n đĩa bằng đệ quy; trả về danh sách các bước chuyển (từ_cọc, sang_cọc)."""
+    if n <= 0:
+        return []
+    if n == 1:
+        return [(coc_nguon, coc_dich)]
+    buoc = {hanoi_fn}(n - 1, coc_nguon, coc_trung_gian, coc_dich)
+    buoc.append((coc_nguon, coc_dich))
+    buoc.extend({hanoi_fn}(n - 1, coc_trung_gian, coc_dich, coc_nguon))
+    return buoc
+
+
+def main() -> None:
+    cac_buoc = {hanoi_fn}(3, "A", "C", "B")
+    print(f"Tổng số bước chuyển 3 đĩa: {{len(cac_buoc)}}")
+    for i, (tu, sang) in enumerate(cac_buoc, start=1):
+        print(f"  Bước {{i}}: {{tu}} -> {{sang}}")
+
+
+if __name__ == "__main__":
+    main()
+'''
+    return OfflineSolution(
+        "exam_hanoi_recursion",
+        code,
+        f"Đã cài đặt đệ quy Tháp Hà Nội {hanoi_fn}().",
+        ("Số bước tối ưu 2^n - 1.",),
+    )
+
+
 EXAM_CODING_SOLVERS = {
     "exam_vowel_cosine": _solve_exam_vowel_cosine,
     "exam_text_jaccard_levenshtein": _solve_exam_text_jaccard_levenshtein,
@@ -971,4 +1435,10 @@ EXAM_CODING_SOLVERS = {
     "exam_prop_logic_and_clauses": _solve_exam_prop_logic_and_clauses,
     "exam_nqueens_conflicts": _solve_exam_nqueens_conflicts,
     "exam_entropy_ig": _solve_exam_entropy_ig,
+    "exam_graph_dls_ids": _solve_exam_graph_dls_ids,
+    "exam_minimax_alphabeta": _solve_exam_minimax_alphabeta,
+    "exam_csp_ac3_backtrack": _solve_exam_csp_ac3_backtrack,
+    "exam_knn_bayes": _solve_exam_knn_bayes,
+    "exam_fuzzy_centroid": _solve_exam_fuzzy_centroid,
+    "exam_hanoi_recursion": _solve_exam_hanoi_recursion,
 }

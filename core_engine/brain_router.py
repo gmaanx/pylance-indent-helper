@@ -1,6 +1,7 @@
 """Request code suggestions from explicitly enabled model providers."""
 
 import json
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
@@ -168,6 +169,21 @@ def _pure_python_domain_hints(user_prompt: str) -> str:
     return "LƯU Ý THUẬT TOÁN & XỬ LÝ BIÊN BẮT BUỘC:\n" + "\n".join(hints) if hints else ""
 
 
+def _ollama_perf_options(total_chars: int) -> Dict[str, Any]:
+    """Anti-lag CPU thread cap & compact KV-cache sizing for smooth responsiveness on lab PCs."""
+    logical_cpus = os.cpu_count() or 4
+    # Reserve at least 2 logical cores so VS Code & Windows UI never stutter during generation
+    safe_threads = max(2, min(6, logical_cpus - 2)) if logical_cpus >= 4 else max(1, logical_cpus - 1)
+    num_ctx = 2048 if total_chars < 3200 else 4096
+    num_predict = 1408 if total_chars < 3200 else 2048
+    return {
+        "temperature": 0.1,
+        "num_ctx": num_ctx,
+        "num_predict": num_predict,
+        "num_thread": safe_threads,
+    }
+
+
 def build_context_injected_prompt(
     user_prompt: str,
     top_skeletons: List[Dict[str, Any]],
@@ -178,21 +194,15 @@ def build_context_injected_prompt(
 ) -> Tuple[str, str]:
     sections = [
         "Bạn là chuyên gia giải thuật & lập trình Python đạt độ chính xác tuyệt đối. "
-        "Hãy giữ nguyên toàn bộ dữ liệu, thuật toán, định dạng đầu ra và mọi ràng buộc phụ trong yêu cầu. "
+        "Giữ nguyên toàn bộ dữ liệu, thuật toán, định dạng đầu ra và mọi ràng buộc phụ trong yêu cầu. "
         "Nếu dùng mẫu tham khảo, bỏ dữ liệu ví dụ và thay bằng đúng dữ liệu của yêu cầu. "
-        "Chỉ trả về mã Python hoàn chỉnh (không viết văn bản giải thích ngoài khối mã).\n"
-        "QUY TRÌNH TƯ DUY TRƯỚC KHI VIẾT HÀM (BẮT BUỘC):\n"
-        "- Ngay đầu file Python, hãy viết 4–6 dòng comment `#` phân tích ngắn gọn: "
-        "(1) Trạng thái bài toán gồm những biến nào (vd `(r, c, pin)` kèm vết `path`), "
-        "(2) Thứ tự cập nhật biến ở mỗi bước chuyển trạng thái đúng từng chữ trong đề, "
-        "(3) Điều kiện hợp lệ / điều kiện sạc hoặc ràng buộc phụ / cấu trúc `visited` tối ưu, "
-        "(4) Kiểu dữ liệu trả về chính xác khi tìm thấy nghiệm và khi vô nghiệm.\n"
-        "5 NGUYÊN TẮC BẮT BUỘC ĐỂ KHÔNG MẮC LỖI:\n"
+        "Chỉ trả về mã Python gọn sạch, KHÔNG viết comment dài dòng để tối ưu tốc độ.\n"
+        "5 NGUYÊN TẮC BẮT BUỘC ĐỂ ĐẠT 10 ĐIỂM TUYỆT ĐỐI:\n"
         "1. Đúng 100% tên lớp, tên hàm, thứ tự tham số, giá trị mặc định và kiểu trả về (`-> int` không trả `bool`; bài tìm đường `-> list` phải lưu vết đầy đủ `[start, ..., goal]`, không trả 1 đỉnh cuối; trả `None` khi vô nghiệm nếu đề yêu cầu).\n"
         "2. Không làm biến đổi trực tiếp (`pop`, `clear`, gán đè) lên `dict`/`list`/`set` đầu vào của người gọi trừ khi đề yêu cầu sửa tại chỗ.\n"
-        "3. Xử lý chặt mọi biên: dữ liệu rỗng, `start == goal`, đỉnh lá không có trong khóa `dict` (`graph.get(u, [])`), chu trình (`visited` hoặc `best_state`), mẫu số bằng 0 (`norm1 == 0 or norm2 == 0`).\n"
-        "4. Khi dùng `heapq` cho UCS / Greedy / A*, luôn kèm bộ đếm `counter = itertools.count()` ở phần tử thứ 2 `(priority, next(counter), state, ...)` để không bao giờ lỗi `TypeError: '<' not supported` khi bằng chi phí.\n"
-        "5. Cài đặt đầy đủ mọi hàm/phương thức (tuyệt đối không để `pass` / `TODO`), trong `main()` tạo ví dụ có nghiệm thực tế để kiểm chứng và tương thích Python 3.8+."
+        "3. Xử lý chặt mọi biên: dữ liệu rỗng, vật cản, `start == goal`, đỉnh lá không có trong khóa `dict` (`graph.get(u, [])`), trạng thái mở rộng trong `visited` (vd `(r, c, pin)` nếu có năng lượng/chìa khóa), mẫu số bằng 0 (`norm1 == 0 or norm2 == 0`).\n"
+        "4. Khi dùng `heapq` cho UCS / Greedy / A*, luôn kèm `counter = itertools.count()` ở phần tử thứ 2 `(priority, next(counter), state, ...)`.\n"
+        "5. Cài đặt đầy đủ mọi hàm/phương thức (không để `pass` / `TODO`), trong `main()` dùng ví dụ có nghiệm hợp lệ để in kết quả thực tế, tương thích Python 3.8+."
     ]
     domain_hints = _pure_python_domain_hints(user_prompt)
     if domain_hints:
@@ -357,7 +367,8 @@ def _repair_ollama_main(model: str, user_prompt: str, draft_code: str, timeout: 
         "system": repair_system,
         "prompt": repair_prompt,
         "stream": False,
-        "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 3072},
+        "keep_alive": "45m",
+        "options": _ollama_perf_options(len(repair_system) + len(repair_prompt)),
     }
     try:
         body = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/generate", payload, timeout)
@@ -457,7 +468,8 @@ def call_tier2_local_llm(
         "system": system_prompt,
         "prompt": user_msg,
         "stream": False,
-        "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 3072},
+        "keep_alive": "45m",
+        "options": _ollama_perf_options(len(system_prompt) + len(user_msg)),
     }
     try:
         details = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/show", {"model": model}, 5.0)
