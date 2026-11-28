@@ -245,9 +245,9 @@ def build_context_injected_prompt(
         sections = [
             "Chuyên gia giải thuật Python 10/10. Chỉ xuất mã Python thuần trong ```python ... ```, KHÔNG giải thích, KHÔNG viết comment để sinh mã nhanh nhất.\n"
             "QUY TẮC BẮT BUỘC:\n"
-            "1. Đúng 100% tên lớp/hàm, thứ tự tham số, kiểu trả về (`-> int` không trả `bool`; tìm đường trả `[start, ..., goal]` hoặc `None` nếu vô nghiệm).\n"
-            "2. Không sửa trực tiếp `dict`/`list` đầu vào; dùng `graph.get(u, [])`; kiểm tra mẫu số 0 (`norm1 == 0 or norm2 == 0 -> 0.0`); `heapq` kèm `next(counter)`.\n"
-            f"3. {io_line} Kết thúc bằng:\n"
+            "1. Đúng 100% tên lớp/hàm, thứ tự tham số, kiểu trả về (`-> int` không trả `bool`; tìm đường trả `[start, ..., goal]` hoặc `None` nếu vô nghiệm; mọi hàm có kiểu trả về BẮT BUỘC có lệnh `return ket_qua`).\n"
+            "2. BẮT BUỘC dùng trực tiếp tất cả tham số truyền vào hàm (TUYỆT ĐỐI KHÔNG dùng biến toàn cục của mẫu tham khảo như `VARIABLES`, `XUNG_DOT`, `GRAPH`); không sửa trực tiếp `dict`/`list` đầu vào; dùng `graph.get(u, [])`; kiểm tra mẫu số 0 (`norm1 == 0 or norm2 == 0 -> 0.0`); `heapq` kèm `next(counter)`.\n"
+            f"3. {io_line} Trong `main()` BẮT BUỘC gọi trực tiếp các hàm/lớp vừa định nghĩa. Kết thúc bằng:\n"
             'if __name__ == "__main__":\n'
             "    main()"
         ]

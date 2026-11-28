@@ -27,10 +27,64 @@ _FUNC_REQ_RE = re.compile(
 _METHOD_SELF_RE = re.compile(
     r"`?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*self\b",
 )
+_PROMPT_RETURN_RE = re.compile(
+    r"`?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\([^()\n]{0,240}\)\s*->\s*`?(?P<rtype>[A-Za-z_][A-Za-z0-9_\[\],\s|.]*)`?",
+)
 _IGNORED_NAMES = {
     "SearchProblem", "CspProblem", "Environment", "RLEnvironment",
     "Python", "main", "heuristic", "danh_gia", "kiem_tra", "func", "f", "g", "h",
 }
+
+
+def _has_own_value_return(fn_node: ast.AST) -> bool:
+    """Check whether `fn_node` has at least one `return <non-None>` (or `yield`) in its own scope."""
+    def _walk_own(stmts: list[ast.stmt]) -> bool:
+        for stmt in stmts:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(stmt, ast.Return):
+                if stmt.value is not None and not (isinstance(stmt.value, ast.Constant) and stmt.value.value is None):
+                    return True
+            if isinstance(stmt, (ast.Yield, ast.YieldFrom)):
+                return True
+            for child_field in ("body", "orelse", "finalbody"):
+                sub_list = getattr(stmt, child_field, None)
+                if isinstance(sub_list, list) and _walk_own(sub_list):
+                    return True
+            handlers = getattr(stmt, "handlers", None)
+            if isinstance(handlers, list):
+                for h in handlers:
+                    if isinstance(getattr(h, "body", None), list) and _walk_own(h.body):
+                        return True
+            for expr in ast.walk(stmt):
+                if isinstance(expr, (ast.Yield, ast.YieldFrom)):
+                    return True
+        return False
+
+    body = getattr(fn_node, "body", None)
+    return _walk_own(body) if isinstance(body, list) else False
+
+
+def _annotation_is_only_none(ann: Optional[ast.AST]) -> bool:
+    if ann is None:
+        return True
+    if isinstance(ann, ast.Constant) and ann.value is None:
+        return True
+    if isinstance(ann, ast.Name) and ann.id == "None":
+        return True
+    return False
+
+
+def _extract_prompt_non_none_returns(prompt: str) -> Dict[str, str]:
+    if not prompt or not prompt.strip():
+        return {}
+    out: Dict[str, str] = {}
+    for m in _PROMPT_RETURN_RE.finditer(prompt):
+        fn_name = m.group("name").strip()
+        rtype = m.group("rtype").strip().rstrip(".,;:")
+        if rtype and rtype.lower() != "none":
+            out[fn_name] = rtype
+    return out
 
 
 def _extract_balanced_parens(text: str, open_paren_idx: int) -> Optional[str]:
@@ -218,14 +272,56 @@ def check_api_contract(code: str, prompt: str = "", starter_code: str = "") -> s
         if meth_name not in defined_methods:
             missing.append(f"phương thức {meth_name}(self, ...)")
 
-    if not missing:
-        return ""
-    unique_missing = list(dict.fromkeys(missing))
-    return (
-        "Mã đề xuất thiếu hoặc đặt sai tên lớp/hàm/phương thức bắt buộc trong đề: "
-        + ", ".join(unique_missing)
-        + ". BẮT BUỘC giữ chính xác 100% tên và chữ ký API theo đề bài."
-    )
+    if missing:
+        unique_missing = list(dict.fromkeys(missing))
+        return (
+            "Mã đề xuất thiếu hoặc đặt sai tên lớp/hàm/phương thức bắt buộc trong đề: "
+            + ", ".join(unique_missing)
+            + ". BẮT BUỘC giữ chính xác 100% tên và chữ ký API theo đề bài."
+        )
+
+    # 3. Verify required functions actually use their parameters & return non-None values when annotated
+    contract_bugs: list[str] = []
+    prompt_ret_map = _extract_prompt_non_none_returns(prompt)
+
+    for fn_name, fn_node in func_nodes.items():
+        if fn_name in ("main", "__init__") or fn_name.startswith("_"):
+            continue
+        assert isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        expected_rt = prompt_ret_map.get(fn_name)
+        has_non_none_ann = not _annotation_is_only_none(fn_node.returns)
+        if (expected_rt or has_non_none_ann) and not _has_own_value_return(fn_node):
+            rt_label = expected_rt or "giá trị khác None"
+            contract_bugs.append(
+                f"Hàm `{fn_name}` có kiểu trả về `{rt_label}` nhưng thân hàm thiếu lệnh `return <kết_quả>` "
+                f"(đang ngầm trả về `None`)! BẮT BUỘC `return` kết quả tính được ở cuối hàm `{fn_name}`."
+            )
+
+        if fn_name in req_funcs:
+            param_names = [
+                a.arg
+                for a in (*fn_node.args.posonlyargs, *fn_node.args.args, *fn_node.args.kwonlyargs)
+                if a.arg not in ("self", "cls", "variables", "values") and not a.arg.startswith("_")
+            ]
+            if param_names and len(fn_node.body) > 0:
+                loaded_ids = {
+                    sub.id
+                    for stmt in fn_node.body
+                    for sub in ast.walk(stmt)
+                    if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)
+                }
+                if "locals" not in loaded_ids and "vars" not in loaded_ids:
+                    unused = [p for p in param_names if p not in loaded_ids]
+                    if unused:
+                        contract_bugs.append(
+                            f"Hàm `{fn_name}` bỏ qua không sử dụng tham số đầu vào `{', '.join(unused)}`! "
+                            f"TUYỆT ĐỐI KHÔNG dùng biến/hằng toàn cục của mẫu tham khảo (như `VARIABLES`, `XUNG_DOT`, `CA_THI`, `GRAPH`...) "
+                            f"thay cho tham số hàm; phải lấy dữ liệu trực tiếp từ tham số `({', '.join(param_names)})` truyền vào `{fn_name}`."
+                        )
+
+    if contract_bugs:
+        return "\n".join(contract_bugs)
+    return ""
 
 
 def _has_non_main_function_without_value_return(code: str) -> bool:

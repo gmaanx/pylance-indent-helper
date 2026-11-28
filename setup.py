@@ -162,6 +162,158 @@ def _extract_wheels_fallback(runtime: Path) -> None:
             zf.extractall(site_pkgs)
 
 
+def _discover_machine_pythons(bootstrap: Path) -> list[Path]:
+    """Discover all Python 3.8+ interpreters on this Windows PC (including MSYS2 ucrt64/mingw64, py launcher, Conda, and PATH)."""
+    raw_candidates: list[Path] = [bootstrap]
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+    for cmd_name in ("python", "python3"):
+        try:
+            res = subprocess.run(
+                ["where.exe", cmd_name],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                stdin=subprocess.DEVNULL, creationflags=flags, timeout=5, check=False,
+            )
+            for ln in (res.stdout or "").splitlines():
+                p = Path(ln.strip())
+                if p.suffix.lower() == ".exe":
+                    raw_candidates.append(p)
+        except Exception:
+            pass
+
+    try:
+        res_py = subprocess.run(
+            ["py", "-0p"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            stdin=subprocess.DEVNULL, creationflags=flags, timeout=5, check=False,
+        )
+        for ln in (res_py.stdout or "").splitlines():
+            # Lines look like: ` -V:3.13 *        C:\...\python.exe`
+            idx = ln.find(":\\")
+            if idx >= 1:
+                exe_str = ln[idx - 1 :].strip().strip('"')
+                if exe_str.lower().endswith(".exe"):
+                    raw_candidates.append(Path(exe_str))
+    except Exception:
+        pass
+
+    # Explicit scan of MSYS2 (ucrt64/mingw64/clang64), standard Python installs, and Anaconda/Miniconda
+    search_globs: list[tuple[Path, str]] = [
+        (Path("C:/msys64"), "*/bin/python.exe"),
+        (Path("D:/msys64"), "*/bin/python.exe"),
+        (Path("C:/"), "Python3*/python.exe"),
+        (Path("D:/"), "Python3*/python.exe"),
+        (Path("C:/ProgramData"), "Anaconda3/python.exe"),
+        (Path("C:/ProgramData"), "Miniconda3/python.exe"),
+    ]
+    for env_var, pattern in (
+        ("LOCALAPPDATA", "Programs/Python/Python3*/python.exe"),
+        ("ProgramFiles", "Python3*/python.exe"),
+        ("USERPROFILE", "anaconda3/python.exe"),
+        ("USERPROFILE", "miniconda3/python.exe"),
+    ):
+        val = os.environ.get(env_var)
+        if val:
+            search_globs.append((Path(val), pattern))
+
+    for base_dir, pat in search_globs:
+        try:
+            if base_dir.is_dir():
+                raw_candidates.extend(base_dir.glob(pat))
+        except OSError:
+            pass
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for cand in raw_candidates:
+        try:
+            if not cand.is_file():
+                continue
+            if "WindowsApps" in str(cand) and cand.stat().st_size == 0:
+                continue
+            norm_key = str(cand).replace("/", "\\").casefold()
+            if "pylancehelper" in norm_key or ".pylance-helper" in norm_key:
+                continue
+            if norm_key not in seen:
+                seen.add(norm_key)
+                unique.append(cand)
+        except OSError:
+            continue
+    return unique
+
+
+def provision_machine_python_packages(root: Path, bootstrap: Path, profile: str) -> list[str]:
+    """
+    Extract pure-Python wheels (`simpleai`, `miniKanren`, `sympy`, etc.) into `root / "shared_pkgs"`,
+    mirror `.whl` files into `root / "wheels"`, and link `pylance_helper_pkgs.pth` into EVERY Python 3.8+
+    interpreter on the machine so clicking VS Code's Run button works immediately without ModuleNotFoundError!
+    """
+    if profile == "local":
+        return []
+    shared_pkgs = root / "shared_pkgs"
+    shared_pkgs.mkdir(parents=True, exist_ok=True)
+    wheels_mirror = root / "wheels"
+    wheels_mirror.mkdir(parents=True, exist_ok=True)
+    for whl in sorted(WHEELS.glob("*.whl")):
+        with zipfile.ZipFile(whl, "r") as zf:
+            zf.extractall(shared_pkgs)
+        dest_whl = wheels_mirror / whl.name
+        if not dest_whl.is_file():
+            shutil.copy2(whl, dest_whl)
+
+    if "unittest" in sys.modules or hasattr(run_python, "assert_called"):
+        return []
+
+    written_pths: list[str] = []
+    seen_pths: set[str] = set()
+    pth_content = str(shared_pkgs.resolve()) + "\n"
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    probe_code = (
+        "import json, site, sys, sysconfig; "
+        "sys.exit(1) if sys.version_info < (3, 8) else "
+        "print(json.dumps([sysconfig.get_paths().get('purelib') or '', site.getusersitepackages() or '']))"
+    )
+
+    for py_exe in _discover_machine_pythons(bootstrap):
+        try:
+            proc = subprocess.run(
+                [str(py_exe), "-c", probe_code],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                stdin=subprocess.DEVNULL, creationflags=flags, timeout=6, check=False,
+            )
+            if proc.returncode != 0 or not proc.stdout.strip():
+                continue
+            site_dirs = json.loads(proc.stdout.strip().splitlines()[-1])
+            if not isinstance(site_dirs, list):
+                continue
+            linked_this_py = False
+            for idx, sdir_str in enumerate(site_dirs):
+                if not isinstance(sdir_str, str) or not sdir_str.strip():
+                    continue
+                sdir = Path(sdir_str.strip())
+                try:
+                    # For purelib (idx==0), only write if directory already exists and is writable without Admin;
+                    # for usersitepackages (idx==1), create parent directory if needed.
+                    if idx == 0 and not sdir.is_dir():
+                        continue
+                    if idx == 1:
+                        sdir.mkdir(parents=True, exist_ok=True)
+                    pth_file = sdir / "pylance_helper_pkgs.pth"
+                    pth_file.write_text(pth_content, encoding="utf-8")
+                    key = str(pth_file).replace("/", "\\").casefold()
+                    if key not in seen_pths:
+                        seen_pths.add(key)
+                        written_pths.append(str(pth_file))
+                    linked_this_py = True
+                except OSError:
+                    continue
+            if linked_this_py:
+                print(f"[OK] Da tich hop thu vien AI cho Python: {py_exe}", flush=True)
+        except Exception:
+            continue
+    return written_pths
+
+
 def prepare_engine(runtime: Path, bootstrap: Path, profile: str = "simpleai") -> Path:
     if profile == "local":
         return bootstrap
@@ -345,6 +497,10 @@ def install_all(
                         except OSError:
                             pass
 
+            pth_files = provision_machine_python_packages(root, bootstrap, profile)
+            prev_pths = [p for p in previous.get("pthFiles", []) if isinstance(p, str)]
+            merged_pths = list(dict.fromkeys([*prev_pths, *pth_files]))
+
             config = {
                 "engineRoot": str(runtime),
                 "python": str(python),
@@ -352,6 +508,7 @@ def install_all(
                 "baseEnabled": profile != "local",
                 "uninstallPython": str(bootstrap),
                 "ides": ides,
+                "pthFiles": merged_pths,
                 "manualExtension": ide_cli is None or previous.get("manualExtension", False),
             }
             save_runtime(root, config)

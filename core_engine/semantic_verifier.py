@@ -266,6 +266,7 @@ def main_harness():
 
     issues = []
     call_counts = {name: 0 for name in req_funcs}
+    non_none_counts = {name: 0 for name in req_funcs}
     class_counts = {name: 0 for name in req_classes}
     observed_calls = {}
     orig_funcs = {}
@@ -285,7 +286,9 @@ def main_harness():
                         except Exception:
                             snap_args = None
                     res = target(*args, **kwargs)
-                    if name not in observed_calls and snap_args is not None:
+                    if res is not None:
+                        non_none_counts[name] = non_none_counts.get(name, 0) + 1
+                    if (name not in observed_calls or (observed_calls[name][2] is None and res is not None)) and snap_args is not None:
                         observed_calls[name] = (snap_args, copy.deepcopy(kwargs), res)
                     if snap_args is not None and res is not None and not allow_mutation:
                         for idx, (before_a, after_a) in enumerate(zip(snap_args, args)):
@@ -339,6 +342,12 @@ def main_harness():
                 + ", ".join(missing_calls)
                 + "). Hãy gọi đầy đủ và print kết quả trong `main()`."
             )
+        for fn_name in req_funcs:
+            if fn_name in return_types and call_counts.get(fn_name, 0) > 0 and non_none_counts.get(fn_name, 0) == 0:
+                issues.append(
+                    f"Trong `main()`, mọi lời gọi hàm `{fn_name}` đều trả về `None` thay vì kiểu `{return_types[fn_name]}`! "
+                    f"Hãy kiểm tra lệnh `return` trong `{fn_name}` và truyền dữ liệu mẫu có nghiệm hợp lệ trong `main()`."
+                )
 
     # Verify explicit prompt literal examples
     for call_src, expected_literal in examples:
@@ -470,6 +479,45 @@ def main_harness():
                     issues.append(f"Hàm `{fn_name}` lỗi với `facts={probe_facts}`: `{type(exc).__name__}: {exc}`.")
                     break
 
+        # 4. Binary CSP solver (domains: dict[str, list], pairs: list[tuple[str, str]]) -> dict | None
+        if (
+            len(obs_args) == 2
+            and isinstance(obs_args[0], dict)
+            and obs_args[0]
+            and all(isinstance(k, str) and isinstance(v, (list, tuple)) and len(v) > 0 for k, v in obs_args[0].items())
+            and isinstance(obs_args[1], list)
+            and all(isinstance(pair, (list, tuple)) and len(pair) == 2 and all(isinstance(x, str) for x in pair) for pair in obs_args[1])
+            and isinstance(obs_res, dict)
+        ):
+            try:
+                csp_ok = target(
+                    {"__NV_A__": ["__CA_1__", "__CA_2__"], "__NV_B__": ["__CA_1__", "__CA_2__"]},
+                    [("__NV_A__", "__NV_B__")],
+                )
+                if (
+                    not isinstance(csp_ok, dict)
+                    or set(csp_ok.keys()) != {"__NV_A__", "__NV_B__"}
+                    or csp_ok["__NV_A__"] == csp_ok["__NV_B__"]
+                ):
+                    issues.append(
+                        f"Hàm CSP `{fn_name}` trả về `{csp_ok!r}` sai trên dữ liệu kiểm thử độc lập — "
+                        f"hãy lấy danh sách biến `list(domains.keys())` và ràng buộc từ tham số hàm thay vì biến toàn cục."
+                    )
+                elif fn_name in allow_none_funcs:
+                    csp_unsat = target(
+                        {"__NV_A__": ["__CA_1__"], "__NV_B__": ["__CA_1__"]},
+                        [("__NV_A__", "__NV_B__")],
+                    )
+                    if csp_unsat is not None:
+                        issues.append(
+                            f"Hàm CSP `{fn_name}` trả về `{csp_unsat!r}` thay vì `None` khi bài toán vô nghiệm."
+                        )
+            except Exception as exc:
+                issues.append(
+                    f"Hàm CSP `{fn_name}` bị lỗi `{type(exc).__name__}: {exc}` trên bộ dữ liệu kiểm thử mới — "
+                    f"hãy dùng trực tiếp tham số `(domains, pairs)` thay vì biến toàn cục."
+                )
+
     print("__SEMANTIC_RESULT__" + json.dumps({"issues": issues[:4]}, ensure_ascii=False))
 
 
@@ -522,7 +570,7 @@ def verify_candidate_semantics(
         kw in folded for kw in ("tai cho", "in-place", "in_place", "cap nhat truc tiep", "thay doi truc tiep")
     )
     check_zero_vec = any(kw in folded for kw in ("chia cho 0", "chuan bang 0", "do dai bang 0", "cosine"))
-    enforce_main_calls = not prompt_forbids_print(prompt) and (len(req_funcs) + len(req_classes) >= 2)
+    enforce_main_calls = not prompt_forbids_print(prompt) and (len(req_funcs) + len(req_classes) >= 1)
 
     # Skip spawning extra process if there are no functions/classes/contracts to verify
     if not defined_funcs and not req_classes and not return_types and not examples:
@@ -535,19 +583,23 @@ def verify_candidate_semantics(
     cwd = str(Path(working_dir).resolve()) if (working_dir and Path(working_dir).is_dir()) else None
     py_exe = find_best_python_executable()
 
-    required_env = {"path", "systemroot", "windir", "temp", "tmp"}
+    required_env = {"path", "systemroot", "windir", "temp", "tmp", "localappdata", "appdata", "userprofile"}
     env = {name: value for name, value in os.environ.items() if name.lower() in required_env}
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
-    env["PYTHONNOUSERSITE"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     py_paths: List[str] = []
     if cwd:
         py_paths.append(cwd)
-    if ".venv" not in py_exe.lower():
-        offline_site = Path(__file__).resolve().parents[1] / "setup_lab" / "offline_pkgs"
-        if offline_site.exists():
-            py_paths.append(str(offline_site))
+    engine_parent = Path(__file__).resolve().parents[1]
+    for extra_pkg_dir in (
+        engine_parent / "site_pkgs",
+        engine_parent / "shared_pkgs",
+        engine_parent.parent / "shared_pkgs",
+        engine_parent / "setup_lab" / "offline_pkgs",
+    ):
+        if extra_pkg_dir.is_dir():
+            py_paths.append(str(extra_pkg_dir))
     if py_paths:
         env["PYTHONPATH"] = os.pathsep.join(py_paths)
 

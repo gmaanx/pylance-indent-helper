@@ -44,7 +44,7 @@ def normalize_pdf_code_artifacts(text: str) -> str:
 def _extract_named_literal(text: str, var_names: Tuple[str, ...], open_ch: str, close_ch: str) -> Optional[Any]:
     cleaned = normalize_pdf_code_artifacts(text)
     for var_name in var_names:
-        pattern = re.compile(rf"\b{re.escape(var_name)}\s*(?::[^=\n]+)?=\s*\{re.escape(open_ch)}", re.IGNORECASE)
+        pattern = re.compile(rf"\b{re.escape(var_name)}\s*(?::[^=\n]+)?=\s*{re.escape(open_ch)}", re.IGNORECASE)
         m = pattern.search(cleaned)
         if not m:
             continue
@@ -126,10 +126,37 @@ def _find_requested_func_name(folded: str, candidates: Tuple[str, ...]) -> Optio
 
 
 def parse_exam_coding_exercise(text: str) -> Optional[Dict[str, Any]]:
-    """Recognize complete pure-Python coding exercises from the course exam bank."""
+    """Recognize complete pure-Python and parameterized SimpleAI coding exercises from the course exam bank."""
     cleaned = normalize_pdf_code_artifacts(text)
     folded = strip_accents(cleaned).casefold()
-    if "simpleai" in folded or "kanren" in folded:
+    if "kanren" in folded:
+        return None
+
+    # 0. Bai 5.x (SimpleAI): Parameterized binary CSP function (e.g. giai_csp_phan_ca(domains, pairs) -> dict | None)
+    if "simpleai" in folded:
+        m_scsp = re.search(
+            r"\b(?P<fn>giai_csp_[A-Za-z0-9_]*|giai_csp|solve_csp_[A-Za-z0-9_]*|solve_csp|phan_ca_csp|to_mau_csp)"
+            r"\s*\(\s*(?P<p1>[A-Za-z_][A-Za-z0-9_]*)\s*(?::[^,)]+)?,\s*(?P<p2>[A-Za-z_][A-Za-z0-9_]*)",
+            folded,
+        )
+        if m_scsp and ("cspproblem" in folded or "backtrack" in folded or "csp" in folded):
+            same_len = len(cleaned) == len(folded)
+            fn_exact = cleaned[m_scsp.start("fn") : m_scsp.end("fn")] if same_len else m_scsp.group("fn")
+            p1_exact = cleaned[m_scsp.start("p1") : m_scsp.end("p1")] if same_len else m_scsp.group("p1")
+            p2_exact = cleaned[m_scsp.start("p2") : m_scsp.end("p2")] if same_len else m_scsp.group("p2")
+            sample_domains = _extract_named_dict_literal(cleaned, p1_exact) or _extract_named_dict_literal(cleaned, "domains")
+            sample_pairs = _extract_named_literal(cleaned, (p2_exact, "pairs", "edges", "conflicts", "xung_dot"), "[", "]")
+            return {
+                "type": "exam_simpleai_csp_func",
+                "fn_name": fn_exact,
+                "p1": p1_exact,
+                "p2": p2_exact,
+                "use_mrv": "most_constrained_variable" in folded or "mrv" in folded,
+                "use_deg": ("highest_degree_variable" in folded or "degree" in folded) and "most_constrained_variable" not in folded,
+                "use_lcv": "least_constraining_value" in folded or "lcv" in folded,
+                "domains": sample_domains if isinstance(sample_domains, dict) else None,
+                "pairs": sample_pairs if isinstance(sample_pairs, list) else None,
+            }
         return None
 
     # 1. Bai 2.1: vector_nguyen_am & do_tuong_dong_cosine
@@ -1426,7 +1453,87 @@ if __name__ == "__main__":
     )
 
 
+def _solve_exam_simpleai_csp_func(problem: Dict[str, Any]):
+    from .offline_solver import OfflineSolution
+
+    fn_name = problem["fn_name"]
+    p1 = problem["p1"]
+    p2 = problem["p2"]
+    use_mrv = bool(problem.get("use_mrv"))
+    use_deg = bool(problem.get("use_deg"))
+    use_lcv = bool(problem.get("use_lcv"))
+
+    imports = ["CspProblem", "backtrack"]
+    bt_kwargs: List[str] = []
+    if use_mrv:
+        imports.append("MOST_CONSTRAINED_VARIABLE")
+        bt_kwargs.append("variable_heuristic=MOST_CONSTRAINED_VARIABLE")
+    elif use_deg:
+        imports.append("HIGHEST_DEGREE_VARIABLE")
+        bt_kwargs.append("variable_heuristic=HIGHEST_DEGREE_VARIABLE")
+    if use_lcv:
+        imports.append("LEAST_CONSTRAINING_VALUE")
+        bt_kwargs.append("value_heuristic=LEAST_CONSTRAINING_VALUE")
+
+    sample_domains = problem.get("domains") or {
+        "An": ["Sang", "Chieu"],
+        "Binh": ["Sang", "Chieu", "Toi"],
+        "Chi": ["Sang", "Chieu", "Toi"],
+        "Dung": ["Chieu", "Toi"],
+    }
+    sample_pairs = problem.get("pairs") or [
+        ("An", "Binh"),
+        ("Binh", "Chi"),
+        ("Chi", "Dung"),
+    ]
+    bt_call = (
+        f"backtrack(problem, {', '.join(bt_kwargs)})"
+        if bt_kwargs
+        else "backtrack(problem)"
+    )
+
+    code = f'''from __future__ import annotations
+
+from simpleai.search import {", ".join(imports)}
+
+
+def khong_trung_gia_tri(variables, values) -> bool:
+    return values[0] != values[1]
+
+
+def {fn_name}({p1}: dict, {p2}: list[tuple[str, str]]) -> dict | None:
+    if not {p1}:
+        return {{}}
+    clean_domains = {{k: list(v) for k, v in {p1}.items()}}
+    if any(len(v) == 0 for v in clean_domains.values()):
+        return None
+    variables = list(clean_domains.keys())
+    constraints = [(tuple(cap), khong_trung_gia_tri) for cap in {p2}]
+    problem = CspProblem(variables, clean_domains, constraints)
+    ket_qua = {bt_call}
+    return dict(ket_qua) if ket_qua is not None else None
+
+
+def main() -> None:
+    domains_mau = {sample_domains!r}
+    pairs_mau = {sample_pairs!r}
+    ket_qua = {fn_name}(domains_mau, pairs_mau)
+    print("Kết quả giải CSP:", ket_qua)
+
+
+if __name__ == "__main__":
+    main()
+'''
+    return OfflineSolution(
+        "exam_simpleai_csp_func",
+        code,
+        f"Đã cài đặt hàm {fn_name}({p1}, {p2}) bằng CspProblem & backtrack của SimpleAI.",
+        ("Không làm thay đổi dữ liệu gốc, trả về dict nghiệm hợp lệ hoặc None khi vô nghiệm.",),
+    )
+
+
 EXAM_CODING_SOLVERS = {
+    "exam_simpleai_csp_func": _solve_exam_simpleai_csp_func,
     "exam_vowel_cosine": _solve_exam_vowel_cosine,
     "exam_text_jaccard_levenshtein": _solve_exam_text_jaccard_levenshtein,
     "exam_graph_dict_bfs_dfs": _solve_exam_graph_dict_bfs_dfs,

@@ -176,7 +176,7 @@ def process_request(
 
         repair_prompt = prompt_for_repair or raw_text
         skels = skeletons_for_repair or []
-        max_repairs = 3 if tier.startswith("tier1_") else 1
+        max_repairs = 3 if tier.startswith("tier1_") else 2
         for _round in range(max_repairs):
             if passed_all:
                 break

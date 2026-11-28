@@ -338,8 +338,7 @@ if __name__ == '__main__':
         print(f"Thoi gian = {thoi_gian:.4f}s")
 '''
 
-SKELETON_CSP_SCHEDULING = '''import time
-from simpleai.search import (
+SKELETON_CSP_SCHEDULING = '''from simpleai.search import (
     CspProblem,
     backtrack,
     MOST_CONSTRAINED_VARIABLE,
@@ -347,45 +346,43 @@ from simpleai.search import (
     LEAST_CONSTRAINING_VALUE,
 )
 
-# Bai toan xep lich thi / phan cong ca truc hoac giai he rang buoc CSP tong quat
-VARIABLES = ('M1', 'M2', 'M3', 'M4', 'M5')
-CA_THI = ['Sang_T2', 'Chieu_T2', 'Sang_T3']
-
-# Cac cap mon co chung sinh vien (khong duoc thi cung ca)
-XUNG_DOT = [
-    ('M1', 'M2'), ('M1', 'M3'),
-    ('M2', 'M3'), ('M2', 'M4'),
-    ('M3', 'M5'), ('M4', 'M5'),
-]
-
 
 def khong_trung_ca(variables, values):
     return values[0] != values[1]
 
 
-if __name__ == '__main__':
-    domains = {m: list(CA_THI) for m in VARIABLES}
-    # Vi du rang buoc mien gia tri rieng: M1 chi thi buoi sang
-    domains['M1'] = ['Sang_T2', 'Sang_T3']
-
-    constraints = [(cap, khong_trung_ca) for cap in XUNG_DOT]
-
-    problem = CspProblem(VARIABLES, domains, constraints)
-    bat_dau = time.perf_counter()
-    ket_qua = backtrack(
+def giai_csp_phan_ca(domains, pairs):
+    if not domains:
+        return {}
+    clean_domains = {m: list(ds) for m, ds in domains.items()}
+    if any(len(ds) == 0 for ds in clean_domains.values()):
+        return None
+    variables = list(clean_domains.keys())
+    constraints = [(tuple(cap), khong_trung_ca) for cap in pairs]
+    problem = CspProblem(variables, clean_domains, constraints)
+    return backtrack(
         problem,
         variable_heuristic=MOST_CONSTRAINED_VARIABLE,
         value_heuristic=LEAST_CONSTRAINING_VALUE,
     )
-    thoi_gian = time.perf_counter() - bat_dau
 
-    print("Ket qua xep lich (CSP):")
-    if ket_qua is None:
-        print("  Khong tim thay lich hop le")
-    else:
-        for m in VARIABLES:
-            print(f"  {m}: {ket_qua[m]}")
-        print(f"Thoi gian = {thoi_gian:.4f}s")
+
+def main():
+    ca_thi = ['Sang_T2', 'Chieu_T2', 'Sang_T3']
+    mon_hoc = ('M1', 'M2', 'M3', 'M4', 'M5')
+    domains = {m: list(ca_thi) for m in mon_hoc}
+    domains['M1'] = ['Sang_T2', 'Sang_T3']
+    xung_dot = [
+        ('M1', 'M2'), ('M1', 'M3'),
+        ('M2', 'M3'), ('M2', 'M4'),
+        ('M3', 'M5'), ('M4', 'M5'),
+    ]
+    ket_qua = giai_csp_phan_ca(domains, xung_dot)
+    print("Ket qua xep lich (CSP):", ket_qua)
+
+
+if __name__ == '__main__':
+    main()
 '''
 
 CSP_SKELETONS: Dict[str, Dict[str, Any]] = {

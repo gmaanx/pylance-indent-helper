@@ -621,6 +621,91 @@ async function runSavedFile() {
   }
 }
 
+function ensureWorkspaceVenvPackages(document, dependencies, runtime) {
+  if (!dependencies.length || !runtime?.root || !process.env.USERPROFILE) return;
+  if (!runtime.root.toLowerCase().startsWith(process.env.USERPROFILE.toLowerCase())) return;
+  const sharedPkgs = path.join(runtime.root, 'shared_pkgs');
+  const wheelsDir = path.join(runtime.root, 'wheels');
+  if (!fs.existsSync(sharedPkgs) && !fs.existsSync(wheelsDir)) return;
+
+  const searchDirs = new Set();
+  const docPath = document?.uri?.scheme === 'file' ? document.uri.fsPath : undefined;
+  if (docPath && path.isAbsolute(docPath)) {
+    let cur = path.dirname(docPath);
+    for (let depth = 0; depth < 4; depth++) {
+      searchDirs.add(cur);
+      const parent = path.dirname(cur);
+      if (parent === cur) break;
+      cur = parent;
+    }
+  }
+  for (const wf of (vscode.workspace?.workspaceFolders || [])) {
+    if (wf?.uri?.fsPath) searchDirs.add(wf.uri.fsPath);
+  }
+
+  for (const dir of searchDirs) {
+    for (const venvName of ['.venv', 'venv']) {
+      const venvRoot = path.join(dir, venvName);
+      if (!fs.existsSync(venvRoot)) continue;
+      const siteCandidates = [path.join(venvRoot, 'Lib', 'site-packages')];
+      const posixLib = path.join(venvRoot, 'lib');
+      if (fs.existsSync(posixLib)) {
+        try {
+          for (const sub of fs.readdirSync(posixLib)) {
+            if (sub.toLowerCase().startsWith('python')) {
+              siteCandidates.push(path.join(posixLib, sub, 'site-packages'));
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+      const winSite = siteCandidates.find((s) => fs.existsSync(s));
+      const venvPy = [
+        path.join(venvRoot, 'Scripts', 'python.exe'),
+        path.join(venvRoot, 'bin', 'python.exe')
+      ].find((p) => fs.existsSync(p));
+      if (!winSite) continue;
+      const hasSimpleAi = fs.existsSync(path.join(winSite, 'simpleai')) || fs.existsSync(path.join(winSite, 'pylance_helper_pkgs.pth'));
+      if (hasSimpleAi && dependencies.every((d) => d === 'simpleai' || fs.existsSync(path.join(winSite, d)))) {
+        continue;
+      }
+      if (fs.existsSync(wheelsDir) && fs.existsSync(venvPy)) {
+        const pkgNames = dependencies.map((d) => (d === 'kanren' ? 'miniKanren' : d));
+        try {
+          const installer = spawn(
+            venvPy,
+            ['-m', 'pip', 'install', '--isolated', '--no-index', '--no-cache-dir', '--disable-pip-version-check', '--find-links', wheelsDir, ...pkgNames],
+            { windowsHide: true, stdio: 'ignore' }
+          );
+          installer.on('error', () => {});
+          installer.unref?.();
+          continue;
+        } catch {
+          // fall back to .pth below
+        }
+      }
+      if (fs.existsSync(sharedPkgs)) {
+        try {
+          const pthPath = path.join(winSite, 'pylance_helper_pkgs.pth');
+          fs.writeFileSync(pthPath, sharedPkgs + '\n', 'utf8');
+          const recPath = path.join(runtime.root, 'venv_pths.json');
+          let list = [];
+          if (fs.existsSync(recPath)) {
+            try { list = JSON.parse(fs.readFileSync(recPath, 'utf8')); } catch { list = []; }
+          }
+          if (Array.isArray(list) && !list.includes(pthPath)) {
+            list.push(pthPath);
+            fs.writeFileSync(recPath, JSON.stringify(list), 'utf8');
+          }
+        } catch {
+          // ignore read-only venv
+        }
+      }
+    }
+  }
+}
+
 async function insertResult(snapshot, response, runtime, signal) {
   const { document, source, replaceStart, replaceEnd } = snapshot;
   const newline = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
@@ -644,8 +729,9 @@ async function insertResult(snapshot, response, runtime, signal) {
     : '';
   vscode.window.setStatusBarMessage('Pylance: ' + statusLabel(response) + preview, 4500);
 
-  // Stealth: only warn if a package is actually missing from the installed runtime!
+  // Stealth: auto-provision any workspace .venv & only warn if a package is missing from the installed runtime!
   const dependencies = knownDependencies(code);
+  ensureWorkspaceVenvPackages(document, dependencies, runtime);
   const missing = dependencies.filter((name) => !runtimePackages(runtime).includes(name));
   if (missing.length) {
     const help = 'Bản cài hiện tại thiếu ' + missing.join(', ') + '. Có thể cài lại bằng setup.py --profile full.';

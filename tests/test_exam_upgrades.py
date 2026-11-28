@@ -821,6 +821,63 @@ class ExamUpgradeTests(unittest.TestCase):
             self.assertFalse(gs_dir.exists())
             self.assertEqual(json.loads((ext_root / ".obsolete").read_text(encoding="utf-8")), {"other.ext-1.0.0": True})
 
+    def test_csp_phan_ca_screenshot_regressions_and_shared_pkgs_provisioning(self):
+        import setup as setup_mod
+        import go_cai_dat as uninst
+
+        csp_prompt = (
+            "Bài 5.2: Giải bài toán phân ca bằng CSP (simpleai)\n"
+            "Viết hàm giai_csp_phan_ca(domains: dict, pairs: list[tuple[str, str]]) -> dict | None "
+            "sử dụng CspProblem và backtrack trong simpleai.search (kèm MOST_CONSTRAINED_VARIABLE và LEAST_CONSTRAINING_VALUE) "
+            "để tìm phân ca sao cho các cặp nhân viên trong pairs không làm cùng ca, trả về dict nghiệm hoặc None nếu vô nghiệm."
+        )
+
+        # 1. Exact solver produces 10/10 verified, non-mutating, runnable solution in < 0.1s
+        sol = process_request(csp_prompt, action_mode="instant", allow_shadow_exec=True)
+        self.assertEqual(sol.validation_status, "verified")
+        self.assertEqual(check_api_contract(sol.code, csp_prompt), "")
+        self.assertEqual(verify_candidate_semantics(sol.code, csp_prompt), "")
+        ns = {"__name__": "test_csp"}
+        exec(compile(sol.code, "<csp>", "exec"), ns)
+        inp_dom = {"A": ["S", "C"], "B": ["S", "C"]}
+        ans = ns["giai_csp_phan_ca"](inp_dom, [("A", "B")])
+        self.assertIsInstance(ans, dict)
+        self.assertNotEqual(ans["A"], ans["B"])
+        self.assertIsNone(ns["giai_csp_phan_ca"]({"A": ["S"], "B": ["S"]}, [("A", "B")]))
+
+        # 2. The exact broken draft from the user's screenshot (missing return + unused `pairs` + skeleton globals) is REJECTED!
+        broken_from_screenshot = (
+            "from simpleai.search import CspProblem, backtrack\n"
+            "VARIABLES = ('An', 'Binh')\n"
+            "XUNG_DOT = [('An', 'Binh')]\n"
+            "CA_THI = ['Sang', 'Chieu']\n"
+            "def khong_trung_ca(variables, values):\n"
+            "    return values[0] != values[1]\n"
+            "def giai_csp_phan_ca(domains: dict, pairs: list[tuple[str, str]]) -> dict | None:\n"
+            "    constraints = [(cap, khong_trung_ca) for cap in XUNG_DOT]\n"
+            "    problem = CspProblem(VARIABLES, domains, constraints)\n"
+            "    ket_qua = backtrack(problem)\n"
+            "    print(ket_qua)\n"
+            "if __name__ == '__main__':\n"
+            "    domains = {m: list(CA_THI) for m in VARIABLES}\n"
+            "    print('done')\n"
+        )
+        c_err = check_api_contract(broken_from_screenshot, csp_prompt)
+        self.assertIn("return", c_err)
+        self.assertIn("pairs", c_err)
+
+        # 3. Shared pure-Python package store extracts simpleai + kanren + sympy & recorded .pth cleanup removes links
+        with tempfile.TemporaryDirectory() as tmp:
+            rt_root = Path(tmp) / "PylanceHelper"
+            setup_mod.provision_machine_python_packages(rt_root, Path(sys.executable), "full")
+            self.assertTrue((rt_root / "shared_pkgs" / "simpleai").is_dir())
+            self.assertTrue(any((rt_root / "wheels").glob("simpleai-*.whl")))
+            fake_pth = Path(tmp) / "fake_site" / "pylance_helper_pkgs.pth"
+            fake_pth.parent.mkdir(parents=True)
+            fake_pth.write_text(str(rt_root / "shared_pkgs"), encoding="utf-8")
+            uninst._scrub_recorded_pth_files(rt_root, {"pthFiles": [str(fake_pth)]})
+            self.assertFalse(fake_pth.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

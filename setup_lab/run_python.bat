@@ -36,6 +36,8 @@ for %%D in (
     "D:\Python310"
     "D:\Python39"
     "D:\Python38"
+    "C:\msys64\ucrt64\bin"
+    "C:\msys64\mingw64\bin"
     "%USERPROFILE%\anaconda3"
     "%USERPROFILE%\miniconda3"
     "C:\ProgramData\Anaconda3"

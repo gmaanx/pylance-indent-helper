@@ -434,13 +434,67 @@ def _scrub_dot_pylance_traces() -> None:
             pass
 
 
+def _scrub_recorded_pth_files(root: Path, config: dict | None) -> None:
+    candidates: list[Path] = []
+    if isinstance(config, dict):
+        for p in config.get("pthFiles", []):
+            if isinstance(p, str) and p.strip():
+                candidates.append(Path(p))
+    venv_rec = root / "venv_pths.json"
+    if venv_rec.is_file():
+        try:
+            extra = json.loads(venv_rec.read_text(encoding="utf-8"))
+            if isinstance(extra, list):
+                candidates.extend(Path(x) for x in extra if isinstance(x, str) and x.strip())
+        except (OSError, ValueError):
+            pass
+    for pth in candidates:
+        try:
+            if pth.name == "pylance_helper_pkgs.pth":
+                pth.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _scrub_temp_and_pth_traces() -> None:
+    pth_targets: list[Path] = []
     try:
-        pth_file = Path(site.getusersitepackages()) / "pylance_helper_pkgs.pth"
-        if pth_file.exists():
-            pth_file.unlink()
+        pth_targets.append(Path(site.getusersitepackages()) / "pylance_helper_pkgs.pth")
     except Exception:
         pass
+    for env_var, pat in (
+        ("APPDATA", "Python/Python3*/site-packages/pylance_helper_pkgs.pth"),
+        ("LOCALAPPDATA", "Programs/Python/Python3*/Lib/site-packages/pylance_helper_pkgs.pth"),
+    ):
+        val = os.environ.get(env_var)
+        if val and Path(val).is_dir():
+            pth_targets.extend(Path(val).glob(pat))
+    if "unittest" not in sys.modules:
+        for base_str, pat in (
+            ("C:/msys64", "*/lib/python*/site-packages/pylance_helper_pkgs.pth"),
+            ("D:/msys64", "*/lib/python*/site-packages/pylance_helper_pkgs.pth"),
+            ("C:/", "Python3*/Lib/site-packages/pylance_helper_pkgs.pth"),
+            ("D:/", "Python3*/Lib/site-packages/pylance_helper_pkgs.pth"),
+            ("C:/Program Files", "Python3*/Lib/site-packages/pylance_helper_pkgs.pth"),
+            ("C:/ProgramData", "Anaconda3/Lib/site-packages/pylance_helper_pkgs.pth"),
+            ("C:/ProgramData", "Miniconda3/Lib/site-packages/pylance_helper_pkgs.pth"),
+        ):
+            bpath = Path(base_str)
+            try:
+                if bpath.is_dir():
+                    pth_targets.extend(bpath.glob(pat))
+            except OSError:
+                pass
+        up = os.environ.get("USERPROFILE")
+        if up and Path(up).is_dir():
+            for cpat in ("anaconda3/Lib/site-packages/pylance_helper_pkgs.pth", "miniconda3/Lib/site-packages/pylance_helper_pkgs.pth"):
+                pth_targets.extend(Path(up).glob(cpat))
+
+    for pth_file in pth_targets:
+        try:
+            pth_file.unlink(missing_ok=True)
+        except OSError:
+            pass
     try:
         tmp_dir = Path(tempfile.gettempdir())
         for pattern in ("pylance_lint_*.py", "pylance_uninst_*.tmp", "pylance_go_ollama_*.tmp", "pylance_hf_*"):
@@ -563,6 +617,7 @@ def uninstall_everything(
                         if not remove_all:
                             raise
                 manual_extension = config.get("manualExtension", False) and not remove_all
+                _scrub_recorded_pth_files(root, config)
                 if remove_all:
                     try:
                         stop_daemon_processes()
