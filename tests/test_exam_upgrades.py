@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -621,6 +622,64 @@ class ExamUpgradeTests(unittest.TestCase):
         ) as run_mock:
             local_ai._run(["C:/Ollama/ollama.exe", "pull", "qwen2.5-coder:1.5b"], timeout=30)
         self.assertEqual(run_mock.call_args.kwargs["creationflags"], 0)
+
+    @unittest.skipUnless(sys.platform == "win32", "Batch installer tests run on Windows cmd.exe")
+    def test_bat_files_in_parentheses_folder_and_wheel_fallback(self):
+        import shutil
+        import subprocess
+        import tempfile
+        import setup as setup_mod
+
+        repo_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            # 1. Verify venv-less wheel extraction fallback imports simpleai, kanren, and sympy cleanly
+            rt = Path(tmp) / "runtime-fallback"
+            setup_mod._extract_wheels_fallback(rt)
+            site_pkgs = rt / "site_pkgs"
+            self.assertTrue((site_pkgs / "simpleai").is_dir())
+            chk = subprocess.run(
+                [sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(site_pkgs)!r}); import simpleai, kanren, sympy"],
+                capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(chk.returncode, 0, chk.stderr)
+
+            # 2. Verify double-click simulation inside folder containing spaces & (1) works with 0 batch syntax errors
+            tricky_dir = Path(tmp) / "pylance-indent-helper-main (1)"
+            (tricky_dir / "setup_lab").mkdir(parents=True)
+            for bat_name in ("setup_ollama.bat", "setup_ollama_sieu_nhe.bat", "setup_nhanh.bat", "setup_phong_thi.bat"):
+                shutil.copy2(repo_root / bat_name, tricky_dir / bat_name)
+            shutil.copy2(repo_root / "setup_lab" / "run_python.bat", tricky_dir / "setup_lab" / "run_python.bat")
+
+            # Unextracted-ZIP guard (when setup.py is absent)
+            res_unextracted = subprocess.run(
+                ["cmd.exe", "/c", str(tricky_dir / "setup_ollama.bat")],
+                input="\r\n", capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(res_unextracted.returncode, 1)
+            self.assertIn("giai nen", res_unextracted.stdout)
+
+            # Extracted double-click simulation (both success exit 0 and failure exit 2)
+            (tricky_dir / "setup.py").write_text(
+                "import sys; print('ARGS:', sys.argv[1:]); sys.exit(0)\n", encoding="utf-8"
+            )
+            for bat_name in ("setup_ollama.bat", "setup_ollama_sieu_nhe.bat"):
+                res_ok = subprocess.run(
+                    ["cmd.exe", "/c", str(tricky_dir / bat_name)],
+                    input="\r\n", capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(res_ok.returncode, 0, res_ok.stdout + res_ok.stderr)
+                self.assertIn("[HOAN TAT 100%]", res_ok.stdout)
+                self.assertNotIn("Cai dat bao loi", res_ok.stdout)
+
+            (tricky_dir / "setup.py").write_text(
+                "import sys; print('[LOI] Gia lap loi mang truong', file=sys.stderr); sys.exit(2)\n", encoding="utf-8"
+            )
+            res_err = subprocess.run(
+                ["cmd.exe", "/c", str(tricky_dir / "setup_ollama.bat")],
+                input="\r\n", capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(res_err.returncode, 2, res_err.stdout + res_err.stderr)
+            self.assertIn("Cai dat bao loi (ma 2)", res_err.stdout)
 
 
 if __name__ == "__main__":

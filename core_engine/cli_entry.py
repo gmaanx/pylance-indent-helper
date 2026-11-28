@@ -9,6 +9,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+if (ROOT_DIR / "site_pkgs").is_dir() and str(ROOT_DIR / "site_pkgs") not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR / "site_pkgs"))
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 

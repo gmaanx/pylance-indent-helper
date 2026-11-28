@@ -356,7 +356,7 @@ def shadow_execute(
     if sys.platform == "win32":
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
-    required_env = {"path", "systemroot", "windir", "temp", "tmp"}
+    required_env = {"path", "systemroot", "windir", "temp", "tmp", "localappdata", "appdata", "userprofile"}
     env = {name: value for name, value in os.environ.items() if name.lower() in required_env}
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
@@ -365,9 +365,12 @@ def shadow_execute(
     if run_cwd:
         python_paths.append(run_cwd)
     if ".venv" not in py_exe.lower():
-        offline_site = Path(__file__).resolve().parents[1] / "setup_lab" / "offline_pkgs"
-        if offline_site.exists():
-            python_paths.append(str(offline_site))
+        for cand_site in (
+            Path(__file__).resolve().parents[1] / "site_pkgs",
+            Path(__file__).resolve().parents[1] / "setup_lab" / "offline_pkgs",
+        ):
+            if cand_site.exists():
+                python_paths.append(str(cand_site))
     if python_paths:
         cur_pp = env.get("PYTHONPATH", "")
         joined = os.pathsep.join(python_paths)

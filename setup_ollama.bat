@@ -1,25 +1,30 @@
 @echo off
 setlocal
-if "%~1"=="" (
-    if exist "%~dp0setup_lab\wheels\simpleai-*.whl" (
-        call "%~dp0setup_lab\run_python.bat" "%~dp0setup.py" --profile full --local --auto-model
-    ) else (
-        call "%~dp0setup_lab\run_python.bat" "%~dp0setup.py" --local-shell --auto-model
-    )
-) else (
-    call "%~dp0setup_lab\run_python.bat" "%~dp0setup.py" --local-shell %*
-)
+if exist "%~dp0setup.py" goto extracted_ok
+echo [LOI] Ban dang bam chay truc tiep ben trong file nen ZIP!
+echo       Hay giai nen (Extract All / WinRAR) ra thu muc roi bam chay lai file .bat nay!
+pause
+exit /b 1
+
+:extracted_ok
+if not "%~1"=="" goto with_args
+pushd "%~dp0" >nul 2>&1
+call "%~dp0setup_lab\run_python.bat" "%~dp0setup.py" --profile full --local --auto-model
 set "ERR=%ERRORLEVEL%"
-echo %CMDCMDLINE% | findstr /i /c:"/c """"" >nul && (
-    echo.
-    if not "%ERR%"=="0" (
-        echo [!] Co loi xay ra khi cai dat. Hay kiem tra mang Internet hoac thong bao phia tren.
-    ) else (
-        echo =====================================================================
-        echo [HOAN TAT] Neu VS Code dang mo san, hay bam Ctrl+Shift+P -^> Reload Window
-        echo            de VS Code nhan ngay Ollama ^(Alt+5 / Alt+2^)!
-        echo =====================================================================
-    )
-    pause
-)
+popd >nul 2>&1
+echo.
+if not "%ERR%"=="0" goto install_failed
+echo =====================================================================
+echo [HOAN TAT 100%%] Vao VS Code bam Ctrl+Shift+P --^> Reload Window la dung ngay!
+echo =====================================================================
+pause
+exit /b 0
+
+:install_failed
+echo [!] Cai dat bao loi (ma %ERR%). Hay xem dong [LOI] mau trang phia tren!
+pause
 exit /b %ERR%
+
+:with_args
+call "%~dp0setup_lab\run_python.bat" "%~dp0setup.py" --local-shell %*
+exit /b %ERRORLEVEL%

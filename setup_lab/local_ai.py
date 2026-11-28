@@ -115,7 +115,10 @@ def normalize_model(value: str) -> str:
 def find_ollama() -> Path | None:
     in_path = shutil.which("ollama.exe") or shutil.which("ollama")
     if in_path:
-        return Path(in_path).resolve()
+        try:
+            return Path(in_path).resolve()
+        except OSError:
+            return Path(in_path)
     candidates: list[Path] = []
     local_appdata = os.environ.get("LOCALAPPDATA")
     if local_appdata:
@@ -128,9 +131,13 @@ def find_ollama() -> Path | None:
         val = os.environ.get(env_var)
         if val:
             candidates.append(Path(val) / "Ollama" / "ollama.exe")
+    candidates.extend((Path(r"C:\Ollama\ollama.exe"), Path(r"D:\Ollama\ollama.exe")))
     for candidate in candidates:
         if candidate.is_file():
-            return candidate.resolve()
+            try:
+                return candidate.resolve()
+            except OSError:
+                return candidate
     return None
 
 
@@ -397,15 +404,57 @@ def _state_lock(path: Path):
         return
     import msvcrt
 
+    pid_file = path.with_suffix(".pid")
     with path.with_suffix(".lock").open("a+b") as lock:
         lock.seek(0)
+        locked = False
+        for attempt in range(2):
+            try:
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                locked = True
+                break
+            except OSError:
+                if attempt == 0:
+                    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    if pid_file.is_file():
+                        try:
+                            old_pid = int(pid_file.read_text(encoding="utf-8").strip())
+                            if old_pid > 0 and old_pid != os.getpid():
+                                subprocess.run(
+                                    ["taskkill", "/F", "/PID", str(old_pid), "/T"],
+                                    capture_output=True, stdin=subprocess.DEVNULL,
+                                    creationflags=flags, timeout=10, check=False,
+                                )
+                        except (OSError, ValueError):
+                            pass
+                    if "unittest" not in sys.modules:
+                        ps_kill = (
+                            f"$myPid = {os.getpid()}; "
+                            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { "
+                            "$_.ProcessId -ne $myPid -and ("
+                            "($_.Name -match '^python' -and $_.CommandLine -match 'setup\\.py') -or "
+                            "($_.Name -eq 'ollama.exe' -and $_.CommandLine -match '\\bpull\\b')"
+                            ") } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+                        )
+                        subprocess.run(
+                            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_kill],
+                            capture_output=True, stdin=subprocess.DEVNULL,
+                            creationflags=flags, timeout=10, check=False,
+                        )
+                    time.sleep(0.5)
+        if not locked:
+            raise RuntimeError("Dang co mot lenh cai hoac go Ollama khac.")
         try:
-            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError as exc:
-            raise RuntimeError("Dang co mot lenh cai hoac go Ollama khac.") from exc
+            pid_file.write_text(str(os.getpid()), encoding="utf-8")
+        except OSError:
+            pass
         try:
             yield
         finally:
+            try:
+                pid_file.unlink(missing_ok=True)
+            except OSError:
+                pass
             lock.seek(0)
             msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
@@ -451,7 +500,7 @@ def _write_state(path: Path, state: dict) -> None:
             mirror = _mirror_local_ai_path()
             mirror.parent.mkdir(parents=True, exist_ok=True)
             mirror.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError:
+    except (OSError, RuntimeError):
         pass
 
 

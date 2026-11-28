@@ -1,16 +1,16 @@
 @echo off
 setlocal
 
-REM 1. Uu tien ban cai Python Win32 chuan (tranh Microsoft Store WindowsApps MSIX ao hoa AppData)
 set "HELPER_PYTHON=%~dp0..\..\.venv\Scripts\python.exe"
-if exist "%HELPER_PYTHON%" (
-    "%HELPER_PYTHON%" -c "import sys; sys.exit(sys.version_info < (3, 8))" >nul 2>&1
-    if not errorlevel 1 goto use_sibling
-)
+if not exist "%HELPER_PYTHON%" goto try_py_win32
+"%HELPER_PYTHON%" -c "import sys; sys.exit(sys.version_info < (3, 8))" >nul 2>&1
+if not errorlevel 1 goto use_sibling
 
+:try_py_win32
 py -3 -c "import sys; b = getattr(sys, '_base_executable', ''); sys.exit(sys.version_info < (3, 8) or 'WindowsApps' in b)" >nul 2>&1
 if not errorlevel 1 goto use_launcher
 
+set "FOUND_PY="
 for %%D in (
     "%LOCALAPPDATA%\Programs\Python\Python313"
     "%LOCALAPPDATA%\Programs\Python\Python312"
@@ -30,29 +30,41 @@ for %%D in (
     "C:\Python310"
     "C:\Python39"
     "C:\Python38"
+    "D:\Python313"
+    "D:\Python312"
+    "D:\Python311"
+    "D:\Python310"
+    "D:\Python39"
+    "D:\Python38"
     "%USERPROFILE%\anaconda3"
     "%USERPROFILE%\miniconda3"
     "C:\ProgramData\Anaconda3"
     "C:\ProgramData\Miniconda3"
-) do (
-    if exist "%%~D\python.exe" (
-        "%%~D\python.exe" -c "import sys; sys.exit(sys.version_info < (3, 8))" >nul 2>&1
-        if not errorlevel 1 (
-            "%%~D\python.exe" %*
-            exit /b %ERRORLEVEL%
-        )
-    )
-)
+) do call :probe_candidate "%%~D\python.exe"
+if defined FOUND_PY goto use_found
 
-REM 2. Du phong: py launcher hoac python trong PATH (ke ca Microsoft Store Python da duoc ho tro ~/.pylance-helper)
 py -3 -c "import sys; sys.exit(sys.version_info < (3, 8))" >nul 2>&1
 if not errorlevel 1 goto use_launcher
+
+for /f "delims=" %%P in ('where python.exe 2^>nul') do call :probe_candidate "%%~P"
+if defined FOUND_PY goto use_found
 
 python -c "import sys; sys.exit(sys.version_info < (3, 8))" >nul 2>&1
 if not errorlevel 1 goto use_path_python
 
-echo [LOI] Can cai Python 3.8 tro len tren may.
+echo [LOI] Khong tim thay Python 3.8 tro len tren may nay. Hay cai Python truoc!
 exit /b 1
+
+:probe_candidate
+if defined FOUND_PY exit /b 0
+if not exist "%~1" exit /b 1
+"%~1" -c "import sys; sys.exit(sys.version_info < (3, 8))" >nul 2>&1
+if not errorlevel 1 set "FOUND_PY=%~1"
+exit /b 0
+
+:use_found
+"%FOUND_PY%" %*
+exit /b %ERRORLEVEL%
 
 :use_path_python
 python %*
