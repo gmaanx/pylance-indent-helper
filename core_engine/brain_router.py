@@ -169,16 +169,59 @@ def _pure_python_domain_hints(user_prompt: str) -> str:
     return "LƯU Ý THUẬT TOÁN & XỬ LÝ BIÊN BẮT BUỘC:\n" + "\n".join(hints) if hints else ""
 
 
+def _compact_skeleton_for_local(code: str, max_lines: int = 54) -> str:
+    """Strip docstrings and full-line comments from a Golden Skeleton so CPU Ollama prefills 3x faster."""
+    import ast as _ast
+
+    cleaned_src = code
+    if hasattr(_ast, "unparse"):
+        try:
+            tree = _ast.parse(code)
+            for node in _ast.walk(tree):
+                if isinstance(node, (_ast.Module, _ast.ClassDef, _ast.FunctionDef, _ast.AsyncFunctionDef)):
+                    if (
+                        node.body
+                        and isinstance(node.body[0], _ast.Expr)
+                        and isinstance(getattr(node.body[0], "value", None), _ast.Constant)
+                        and isinstance(node.body[0].value.value, str)
+                    ):
+                        node.body.pop(0)
+                        if not node.body:
+                            node.body.append(_ast.Pass())
+            cleaned_src = _ast.unparse(tree)
+        except Exception:
+            cleaned_src = code
+
+    lines: List[str] = []
+    for raw_ln in cleaned_src.splitlines():
+        stripped = raw_ln.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        lines.append(raw_ln)
+        if len(lines) >= max_lines:
+            break
+    return "\n".join(lines)
+
+
 def _ollama_perf_options(total_chars: int) -> Dict[str, Any]:
-    """Anti-lag CPU thread cap & compact KV-cache sizing for smooth responsiveness on lab PCs."""
+    """High-throughput AVX2 batch + smart physical-core thread sizing for fast, lag-free CPU inference."""
     logical_cpus = os.cpu_count() or 4
-    # Reserve at least 2 logical cores so VS Code & Windows UI never stutter during generation
-    safe_threads = max(2, min(6, logical_cpus - 2)) if logical_cpus >= 4 else max(1, logical_cpus - 1)
-    num_ctx = 2048 if total_chars < 3200 else 4096
-    num_predict = 1408 if total_chars < 3200 else 2048
+    if logical_cpus >= 12:
+        safe_threads = 8
+    elif logical_cpus >= 8:
+        safe_threads = 6
+    elif logical_cpus >= 6:
+        safe_threads = 5
+    elif logical_cpus >= 4:
+        safe_threads = 3
+    else:
+        safe_threads = max(1, logical_cpus)
+    num_ctx = 2048 if total_chars < 3600 else 4096
+    num_predict = 1024 if total_chars < 2800 else 1536
     return {
-        "temperature": 0.1,
+        "temperature": 0.05,
         "num_ctx": num_ctx,
+        "num_batch": 512,
         "num_predict": num_predict,
         "num_thread": safe_threads,
     }
@@ -191,40 +234,74 @@ def build_context_injected_prompt(
     error_traceback: str = "",
     *,
     workspace_context: str = "",
+    for_local: bool = False,
 ) -> Tuple[str, str]:
-    sections = [
-        "Bạn là chuyên gia giải thuật & lập trình Python đạt độ chính xác tuyệt đối. "
-        "Giữ nguyên toàn bộ dữ liệu, thuật toán, định dạng đầu ra và mọi ràng buộc phụ trong yêu cầu. "
-        "Nếu dùng mẫu tham khảo, bỏ dữ liệu ví dụ và thay bằng đúng dữ liệu của yêu cầu. "
-        "Chỉ trả về mã Python gọn sạch, KHÔNG viết comment dài dòng để tối ưu tốc độ.\n"
-        "5 NGUYÊN TẮC BẮT BUỘC ĐỂ ĐẠT 10 ĐIỂM TUYỆT ĐỐI:\n"
-        "1. Đúng 100% tên lớp, tên hàm, thứ tự tham số, giá trị mặc định và kiểu trả về (`-> int` không trả `bool`; bài tìm đường `-> list` phải lưu vết đầy đủ `[start, ..., goal]`, không trả 1 đỉnh cuối; trả `None` khi vô nghiệm nếu đề yêu cầu).\n"
-        "2. Không làm biến đổi trực tiếp (`pop`, `clear`, gán đè) lên `dict`/`list`/`set` đầu vào của người gọi trừ khi đề yêu cầu sửa tại chỗ.\n"
-        "3. Xử lý chặt mọi biên: dữ liệu rỗng, vật cản, `start == goal`, đỉnh lá không có trong khóa `dict` (`graph.get(u, [])`), trạng thái mở rộng trong `visited` (vd `(r, c, pin)` nếu có năng lượng/chìa khóa), mẫu số bằng 0 (`norm1 == 0 or norm2 == 0`).\n"
-        "4. Khi dùng `heapq` cho UCS / Greedy / A*, luôn kèm `counter = itertools.count()` ở phần tử thứ 2 `(priority, next(counter), state, ...)`.\n"
-        "5. Cài đặt đầy đủ mọi hàm/phương thức (không để `pass` / `TODO`), trong `main()` dùng ví dụ có nghiệm hợp lệ để in kết quả thực tế, tương thích Python 3.8+."
-    ]
-    domain_hints = _pure_python_domain_hints(user_prompt)
-    if domain_hints:
-        sections.append(domain_hints)
-    if existing_code.strip() and is_starter_template(existing_code) and not error_traceback.strip():
-        sections.append(
-            "CHẾ ĐỘ ĐIỀN KHUYẾT KHUNG ĐỀ THI (# TODO / pass / NotImplementedError):\n"
-            "- Giữ nguyên 100% tên lớp, tên hàm, danh sách tham số và cấu trúc khung code giảng viên đã cho.\n"
-            "- Hoàn thiện đầy đủ tất cả các phần `# TODO`, `pass`, `...`, `NotImplementedError` theo đúng yêu cầu đề bài."
+    if for_local:
+        io_line = (
+            "Đọc dữ liệu stdin theo đề và chỉ print kết quả theo đúng định dạng yêu cầu."
+            if _prompt_requests_stdin(user_prompt)
+            else "Không dùng `input()`; gán sẵn dữ liệu mẫu hợp lệ trong `def main():` và print kết quả thực tế theo đúng định dạng yêu cầu."
         )
-    if top_skeletons or _needs_ai_library_rules(f"{user_prompt}\n{existing_code}"):
-        sections.append(SIMPLEAI_STRICT_RULES.strip())
-    if top_skeletons and not error_traceback.strip():
-        examples = "\n\n".join(
-            f"Mẫu tham khảo cú pháp ({item['title']} — CHỈ tham khảo cú pháp thư viện, KHÔNG chép tên hàm/dữ liệu nếu đề yêu cầu khác):\n{item['code']}"
-            for item in top_skeletons[:2]
-        )
-        sections.append(examples)
-    if workspace_context and workspace_context.strip():
-        sections.append(workspace_context.strip())
-    sections.append(_runnable_output_guidance(user_prompt))
-    system_prompt = "\n\n".join(sections)
+        sections = [
+            "Chuyên gia giải thuật Python 10/10. Chỉ xuất mã Python thuần trong ```python ... ```, KHÔNG giải thích, KHÔNG viết comment để sinh mã nhanh nhất.\n"
+            "QUY TẮC BẮT BUỘC:\n"
+            "1. Đúng 100% tên lớp/hàm, thứ tự tham số, kiểu trả về (`-> int` không trả `bool`; tìm đường trả `[start, ..., goal]` hoặc `None` nếu vô nghiệm).\n"
+            "2. Không sửa trực tiếp `dict`/`list` đầu vào; dùng `graph.get(u, [])`; kiểm tra mẫu số 0 (`norm1 == 0 or norm2 == 0 -> 0.0`); `heapq` kèm `next(counter)`.\n"
+            f"3. {io_line} Kết thúc bằng:\n"
+            'if __name__ == "__main__":\n'
+            "    main()"
+        ]
+        domain_hints = _pure_python_domain_hints(user_prompt)
+        if domain_hints:
+            sections.append(domain_hints)
+        if existing_code.strip() and is_starter_template(existing_code) and not error_traceback.strip():
+            sections.append("Giữ nguyên 100% chữ ký hàm/lớp của khung mã và hoàn thiện mọi `# TODO` / `pass` / `NotImplementedError`.")
+        if top_skeletons or _needs_ai_library_rules(f"{user_prompt}\n{existing_code}"):
+            sections.append(
+                "SimpleAI bắt buộc: `state` là `tuple` (không dùng `list`); `SearchProblem.__init__` gọi `super().__init__(initial_state)`; "
+                "`bfs/dfs/astar(..., graph_search=True)`; hàm ràng buộc CSP có dạng `def cond(variables, values):`."
+            )
+        if top_skeletons and not error_traceback.strip():
+            item = top_skeletons[0]
+            compact_code = _compact_skeleton_for_local(item["code"])
+            sections.append(f"Mẫu cú pháp ({item['title']} — chỉ tham khảo cú pháp API, giữ đúng tên/dữ liệu của đề):\n{compact_code}")
+        if workspace_context and workspace_context.strip():
+            sections.append(workspace_context.strip()[:1200])
+        system_prompt = "\n\n".join(sections)
+    else:
+        sections = [
+            "Bạn là chuyên gia giải thuật & lập trình Python đạt độ chính xác tuyệt đối. "
+            "Giữ nguyên toàn bộ dữ liệu, thuật toán, định dạng đầu ra và mọi ràng buộc phụ trong yêu cầu. "
+            "Nếu dùng mẫu tham khảo, bỏ dữ liệu ví dụ và thay bằng đúng dữ liệu của yêu cầu. "
+            "Chỉ trả về mã Python gọn sạch, KHÔNG viết comment dài dòng để tối ưu tốc độ.\n"
+            "5 NGUYÊN TẮC BẮT BUỘC ĐỂ ĐẠT 10 ĐIỂM TUYỆT ĐỐI:\n"
+            "1. Đúng 100% tên lớp, tên hàm, thứ tự tham số, giá trị mặc định và kiểu trả về (`-> int` không trả `bool`; bài tìm đường `-> list` phải lưu vết đầy đủ `[start, ..., goal]`, không trả 1 đỉnh cuối; trả `None` khi vô nghiệm nếu đề yêu cầu).\n"
+            "2. Không làm biến đổi trực tiếp (`pop`, `clear`, gán đè) lên `dict`/`list`/`set` đầu vào của người gọi trừ khi đề yêu cầu sửa tại chỗ.\n"
+            "3. Xử lý chặt mọi biên: dữ liệu rỗng, vật cản, `start == goal`, đỉnh lá không có trong khóa `dict` (`graph.get(u, [])`), trạng thái mở rộng trong `visited` (vd `(r, c, pin)` nếu có năng lượng/chìa khóa), mẫu số bằng 0 (`norm1 == 0 or norm2 == 0`).\n"
+            "4. Khi dùng `heapq` cho UCS / Greedy / A*, luôn kèm `counter = itertools.count()` ở phần tử thứ 2 `(priority, next(counter), state, ...)`.\n"
+            "5. Cài đặt đầy đủ mọi hàm/phương thức (không để `pass` / `TODO`), trong `main()` dùng ví dụ có nghiệm hợp lệ để in kết quả thực tế, tương thích Python 3.8+."
+        ]
+        domain_hints = _pure_python_domain_hints(user_prompt)
+        if domain_hints:
+            sections.append(domain_hints)
+        if existing_code.strip() and is_starter_template(existing_code) and not error_traceback.strip():
+            sections.append(
+                "CHẾ ĐỘ ĐIỀN KHUYẾT KHUNG ĐỀ THI (# TODO / pass / NotImplementedError):\n"
+                "- Giữ nguyên 100% tên lớp, tên hàm, danh sách tham số và cấu trúc khung code giảng viên đã cho.\n"
+                "- Hoàn thiện đầy đủ tất cả các phần `# TODO`, `pass`, `...`, `NotImplementedError` theo đúng yêu cầu đề bài."
+            )
+        if top_skeletons or _needs_ai_library_rules(f"{user_prompt}\n{existing_code}"):
+            sections.append(SIMPLEAI_STRICT_RULES.strip())
+        if top_skeletons and not error_traceback.strip():
+            examples = "\n\n".join(
+                f"Mẫu tham khảo cú pháp ({item['title']} — CHỈ tham khảo cú pháp thư viện, KHÔNG chép tên hàm/dữ liệu nếu đề yêu cầu khác):\n{item['code']}"
+                for item in top_skeletons[:2]
+            )
+            sections.append(examples)
+        if workspace_context and workspace_context.strip():
+            sections.append(workspace_context.strip())
+        sections.append(_runnable_output_guidance(user_prompt))
+        system_prompt = "\n\n".join(sections)
 
     parts = [f"Yêu cầu:\n{user_prompt}"]
     if existing_code.strip():
@@ -350,41 +427,69 @@ def call_tier1_cloud_llm(
 
 
 def _repair_ollama_main(model: str, user_prompt: str, draft_code: str, timeout: float) -> Optional[str]:
+    """Fast surgical synthesis of ONLY `def main():` (~40 tokens, ~2s on CPU) instead of regenerating the whole file."""
     repair_system = (
-        "Bạn là trợ lý Python. Chỉ trả về mã Python hoàn chỉnh (không giải thích). "
-        "Giữ nguyên toàn bộ các lớp và hàm trong mã hiện có, sau đó viết (hoặc thay thế) "
-        '`def main():` và `if __name__ == "__main__":\\n    main()` để gọi đúng hàm/lớp đã cài đặt '
-        "với dữ liệu mẫu hợp lệ theo đề bài và print kết quả thực tế (theo đúng định dạng đề nếu đề có yêu cầu; "
-        'KHÔNG in chuỗi giả như "Xin chào"/"Hello"; KHÔNG dùng `input()` trừ khi đề yêu cầu nhập từ bàn phím).'
+        "Chỉ xuất duy nhất khối `def main():` và `if __name__ == \"__main__\":\\n    main()` bằng Python "
+        "(KHÔNG chép lại các lớp/hàm đã có, KHÔNG giải thích, KHÔNG dùng `input()` trừ khi đề bắt buộc) "
+        "để gọi đúng hàm/lớp trong mã hiện có với dữ liệu mẫu hợp lệ và print kết quả thực tế."
     )
     repair_prompt = (
-        f"Đề bài:\n{user_prompt}\n\n"
-        f"Mã hiện có (thiếu hoặc sai hàm main):\n```python\n{draft_code}\n```\n\n"
-        'Hãy trả về lại toàn bộ mã Python đầy đủ kèm `def main():` thực sự gọi lời giải trên và in kết quả.'
+        f"Đề bài:\n{user_prompt[:1200]}\n\n"
+        f"Các hàm/lớp đã cài đặt:\n```python\n{draft_code}\n```\n\n"
+        "Viết tiếp phần `def main():` và `if __name__ == \"__main__\":` ở cuối file:"
     )
+    opts = _ollama_perf_options(len(repair_system) + len(repair_prompt))
+    opts["num_predict"] = 320
     payload = {
         "model": model,
         "system": repair_system,
         "prompt": repair_prompt,
         "stream": False,
-        "keep_alive": "45m",
-        "options": _ollama_perf_options(len(repair_system) + len(repair_prompt)),
+        "keep_alive": "90m",
+        "options": opts,
     }
     try:
-        body = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/generate", payload, timeout)
+        body = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/generate", payload, min(timeout, 25.0))
     except (OSError, ValueError, RecursionError):
         return None
     if body.get("done") is not True or body.get("done_reason") in ("length", "load"):
         return None
-    candidate = extract_python_code(body.get("response", ""))
-    if not candidate:
+    tail = extract_python_code(body.get("response", ""))
+    if not tail:
         return None
-    try:
-        compile(candidate, "<ollama-repair>", "exec")
-    except (SyntaxError, ValueError, OverflowError, RecursionError, MemoryError):
-        return None
-    if has_meaningful_runnable_main(candidate, user_prompt):
-        return candidate
+    candidates_to_try = [tail]
+    if "def main" in tail and tail.strip() != draft_code.strip():
+        # Strip any prior dummy `def main` / `if __name__` tail from draft_code before appending surgical main()
+        import ast as _ast
+        prefix = draft_code.rstrip()
+        try:
+            tree = _ast.parse(draft_code)
+            cut_line = None
+            for node in tree.body:
+                if isinstance(node, _ast.FunctionDef) and node.name == "main":
+                    cut_line = node.lineno
+                    break
+                if (
+                    isinstance(node, _ast.If)
+                    and isinstance(node.test, _ast.Compare)
+                    and isinstance(node.test.left, _ast.Name)
+                    and node.test.left.id == "__name__"
+                ):
+                    cut_line = node.lineno
+                    break
+            if cut_line is not None and cut_line > 1:
+                prefix = "\n".join(draft_code.splitlines()[: cut_line - 1]).rstrip()
+        except Exception:
+            pass
+        if prefix:
+            candidates_to_try.append(prefix + "\n\n\n" + tail.lstrip())
+    for cand in candidates_to_try:
+        try:
+            compile(cand, "<ollama-repair>", "exec")
+        except (SyntaxError, ValueError, OverflowError, RecursionError, MemoryError):
+            continue
+        if has_meaningful_runnable_main(cand, user_prompt):
+            return cand
     return None
 
 
@@ -510,6 +615,21 @@ def _try_wake_ollama_daemon() -> bool:
     return False
 
 
+def is_local_ollama_ready() -> bool:
+    """Fast loopback readiness check (auto-waking daemon if needed) for real local Ollama installations."""
+    if not _is_real_local_opener():
+        return False
+    model = CONFIG.get("local_model")
+    if not isinstance(model, str) or not model.strip():
+        return False
+    if model.casefold().endswith(("-cloud", ":cloud")) or "@cloud" in model.casefold():
+        return False
+    found = _find_any_installed_local_model()
+    if found is None and _try_wake_ollama_daemon():
+        found = _find_any_installed_local_model()
+    return bool(found)
+
+
 def call_tier2_local_llm(
     user_prompt: str,
     best_skeleton: Optional[Dict[str, Any]],
@@ -526,6 +646,7 @@ def call_tier2_local_llm(
         existing_code,
         error_traceback=error_traceback,
         workspace_context=workspace_context,
+        for_local=True,
     )
     # Guard against silent prompt truncation on a small local model.
     if len(user_msg.encode("utf-8")) > 12_000:
@@ -542,7 +663,7 @@ def call_tier2_local_llm(
         "system": system_prompt,
         "prompt": user_msg,
         "stream": False,
-        "keep_alive": "45m",
+        "keep_alive": "90m",
         "options": _ollama_perf_options(len(system_prompt) + len(user_msg)),
     }
     try:
@@ -584,11 +705,21 @@ def call_tier2_local_llm(
     code = extract_python_code(body.get("response", ""))
     if body.get("done") is True and body.get("done_reason") not in ("length", "load") and code:
         if not existing_code.strip() and not prompt_forbids_print(user_prompt):
-            _, has_meaningful = ensure_runnable_print(code, user_prompt)
-            if not has_meaningful:
+            enhanced, has_meaningful = ensure_runnable_print(code, user_prompt)
+            if has_meaningful and not _has_syntax_err(enhanced):
+                code = enhanced
+            elif not has_meaningful:
                 repaired = _repair_ollama_main(model, user_prompt, code, timeout)
                 if repaired:
                     code = repaired
         return code, "tier2_ollama"
     messages.append("Ollama chưa trả mã hoàn chỉnh. Thử yêu cầu ngắn hơn hoặc chọn model khác.")
     return None
+
+
+def _has_syntax_err(src: str) -> bool:
+    try:
+        compile(src, "<chk>", "exec")
+        return False
+    except Exception:
+        return True

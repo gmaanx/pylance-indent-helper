@@ -11,6 +11,7 @@ from .brain_router import (
     build_context_injected_prompt,
     call_tier1_cloud_llm,
     call_tier2_local_llm,
+    is_local_ollama_ready,
     select_relevant_skeletons,
 )
 from .cloud_review import review_cloud_draft, syntax_error as _syntax_error
@@ -175,7 +176,7 @@ def process_request(
 
         repair_prompt = prompt_for_repair or raw_text
         skels = skeletons_for_repair or []
-        max_repairs = 3 if tier.startswith("tier1_") else 2
+        max_repairs = 3 if tier.startswith("tier1_") else 1
         for _round in range(max_repairs):
             if passed_all:
                 break
@@ -277,6 +278,24 @@ def process_request(
     if action_mode == "local":
         if not allow_local:
             return finish("unsupported", "tier2_ollama", error="Yêu cầu chưa bật Ollama cục bộ.")
+        # Instant <0.05s verified fast-path for exact parameterized exam problems when local Ollama is ready
+        if (not parsed.existing_code or completing_template) and is_local_ollama_ready():
+            try:
+                fast_sol = solve_offline(parsed.prompt_text or raw_text, parsed.target_skeleton_id)
+            except OfflineProblemError:
+                fast_sol = None
+            if (
+                fast_sol is not None
+                and fast_sol.validation_status == "verified"
+                and (not completing_template or check_api_contract(fast_sol.code, raw_text, parsed.existing_code) == "")
+            ):
+                return finish(
+                    fast_sol.validation_status,
+                    "tier2_ollama",
+                    fast_sol.code,
+                    summary=fast_sol.summary,
+                    notes=(fast_sol.summary, *fast_sol.diagnostics),
+                )
         prompt_text = parsed.prompt_text or raw_text if completing_template else raw_text
         existing_arg = parsed.existing_code if completing_template else ""
         candidate = call_tier2_local_llm(

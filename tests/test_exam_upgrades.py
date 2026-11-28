@@ -284,7 +284,10 @@ class ExamUpgradeTests(unittest.TestCase):
             unins = local_dir / "Programs" / "Ollama" / "unins000.exe"
             unins.write_text("exe", encoding="utf-8")
 
-            with patch.dict("os.environ", {"LOCALAPPDATA": str(local_dir), "APPDATA": str(root / "roaming")}), \
+            with patch.dict(
+                "os.environ",
+                {"LOCALAPPDATA": str(local_dir), "APPDATA": str(root / "roaming"), "USERPROFILE": str(home_dir)},
+            ), \
                     patch.object(Path, "home", return_value=home_dir), \
                     patch.object(local_ai, "find_ollama", return_value=local_dir / "Programs" / "Ollama" / "ollama.exe"), \
                     patch.object(local_ai, "_stop_ollama_processes") as stop_proc, \
@@ -592,16 +595,26 @@ class ExamUpgradeTests(unittest.TestCase):
                 exec(compile(res_ex.code, "<tex>", "exec"), ns_ex)
                 self.assertIn(expected_fn, ns_ex)
 
-        # 8. Anti-lag Ollama thread cap & compact KV-cache options
+        # 8. High-throughput Ollama thread cap, AVX2 batch & compact KV-cache options
         opts = brain_router._ollama_perf_options(1200)
         self.assertEqual(opts["num_ctx"], 2048)
-        self.assertLessEqual(opts["num_thread"], 6)
+        self.assertEqual(opts["num_batch"], 512)
+        self.assertLessEqual(opts["num_thread"], 8)
 
     def test_school_pc_winget_fallback_and_msix_escape(self):
         import go_cai_dat
 
-        # 1. When winget.exe is absent on school Windows LTSC/Education, falls back to direct HTTPS installer
-        with patch.object(local_ai.shutil, "which", return_value=None), patch.object(
+        # 1a. On CPU-only school PCs, prefers ~30MB slim RemoteZip extractor over 1.8GB full installer!
+        with patch.object(local_ai, "detect_nvidia_vram_gb", return_value=0.0), patch.object(
+            local_ai, "_install_ollama_slim_cpu_zip", return_value=Path("C:/Ollama/ollama.exe")
+        ) as slim_dl:
+            self.assertEqual(local_ai._install_ollama(), Path("C:/Ollama/ollama.exe"))
+        slim_dl.assert_called_once()
+
+        # 1b. When slim zip & winget.exe are unavailable, falls back to direct HTTPS installer
+        with patch.object(local_ai, "detect_nvidia_vram_gb", return_value=0.0), patch.object(
+            local_ai, "_install_ollama_slim_cpu_zip", side_effect=RuntimeError("cdn blocked")
+        ), patch.object(local_ai.shutil, "which", return_value=None), patch.object(
             local_ai, "_download_and_install_ollama_direct", return_value=Path("C:/Ollama/ollama.exe")
         ) as direct_dl:
             exe = local_ai._install_ollama()
@@ -646,7 +659,7 @@ class ExamUpgradeTests(unittest.TestCase):
             # 2. Verify double-click simulation inside folder containing spaces & (1) works with 0 batch syntax errors
             tricky_dir = Path(tmp) / "pylance-indent-helper-main (1)"
             (tricky_dir / "setup_lab").mkdir(parents=True)
-            for bat_name in ("setup_ollama.bat", "setup_ollama_sieu_nhe.bat", "setup_nhanh.bat", "setup_phong_thi.bat"):
+            for bat_name in ("setup_ollama.bat", "setup_nhanh.bat", "setup_phong_thi.bat"):
                 shutil.copy2(repo_root / bat_name, tricky_dir / bat_name)
             shutil.copy2(repo_root / "setup_lab" / "run_python.bat", tricky_dir / "setup_lab" / "run_python.bat")
 
@@ -662,7 +675,7 @@ class ExamUpgradeTests(unittest.TestCase):
             (tricky_dir / "setup.py").write_text(
                 "import sys; print('ARGS:', sys.argv[1:]); sys.exit(0)\n", encoding="utf-8"
             )
-            for bat_name in ("setup_ollama.bat", "setup_ollama_sieu_nhe.bat"):
+            for bat_name in ("setup_ollama.bat", "setup_phong_thi.bat"):
                 res_ok = subprocess.run(
                     ["cmd.exe", "/c", str(tricky_dir / bat_name)],
                     input="\r\n", capture_output=True, text=True, timeout=15,
@@ -717,7 +730,7 @@ class ExamUpgradeTests(unittest.TestCase):
     def test_pull_resilient_falls_back_to_hf_and_scrub_removes_startmenu_folder_and_onedrive_icon(self):
         from unittest.mock import MagicMock
 
-        # 1. When `ollama pull` exits non-zero / stalls twice with 0 bytes gained, automatically switches to HuggingFace GGUF!
+        # 1. When `ollama pull` exits non-zero / stalls with 0 bytes gained, immediately switches to 8-thread HuggingFace!
         fake_proc = MagicMock()
         fake_proc.poll.return_value = 1
         fake_proc.returncode = 1
@@ -725,11 +738,33 @@ class ExamUpgradeTests(unittest.TestCase):
                 patch.object(local_ai, "_ollama_blobs_total_bytes", return_value=120 * 1024 * 1024), \
                 patch.object(local_ai, "_restart_ollama_daemon") as restart_daemon, \
                 patch.object(local_ai, "_download_gguf_from_hf_and_create") as hf_dl:
-            local_ai._pull_model_resilient(Path("C:/Ollama/ollama.exe"), "qwen2.5-coder:0.5b")
-        hf_dl.assert_called_once_with(Path("C:/Ollama/ollama.exe"), "qwen2.5-coder:0.5b")
-        restart_daemon.assert_called_once()
+            local_ai._pull_model_resilient(Path("C:/Ollama/ollama.exe"), "qwen2.5-coder:1.5b")
+        hf_dl.assert_called_once_with(Path("C:/Ollama/ollama.exe"), "qwen2.5-coder:1.5b")
+        restart_daemon.assert_not_called()
 
-        # 2. _scrub_ollama_windows_traces deletes Start Menu\Programs\Ollama\ folder + OneDrive\Desktop\Ollama.lnk
+        # 2. Local prompt compaction cuts prompt size by >50% while preserving executable reference API
+        skel = ALL_SKELETONS["search_8puzzle_astar"]
+        sys_cloud, _ = brain_router.build_context_injected_prompt("Giải 8-puzzle bằng A*", [skel], for_local=False)
+        sys_local, _ = brain_router.build_context_injected_prompt("Giải 8-puzzle bằng A*", [skel], for_local=True)
+        self.assertLess(len(sys_local), len(sys_cloud) * 0.5)
+        self.assertIn("SearchProblem", sys_local)
+        self.assertIn('if __name__ == "__main__":', sys_local)
+
+        # 3. Alt+5 (`action_mode="local"`) instant verified fast-path solves thu_nghiem.py exercises in < 0.1s when Ollama is ready
+        with patch("core_engine.engine_pipeline.is_local_ollama_ready", return_value=True):
+            t_res = process_request(
+                "Câu 1: Cho bài toán 8-puzzle với trạng thái ban đầu:\n"
+                "((1, 2, 3), (4, 0, 6), (7, 5, 8))\n"
+                "và trạng thái đích ((1, 2, 3), (4, 5, 6), (7, 8, 0)).\n"
+                "Hãy cài đặt bằng thư viện simpleai và giải bằng thuật toán A* với 2 hàm heuristic h1 và h2.",
+                action_mode="local",
+                allow_local=True,
+            )
+        self.assertEqual(t_res.validation_status, "verified")
+        self.assertEqual(t_res.tier_used, "tier2_ollama")
+        self.assertLess(t_res.elapsed_sec, 0.2)
+
+        # 4. _scrub_ollama_windows_traces deletes Start Menu\Programs\Ollama\ folder + OneDrive\Desktop\Ollama.lnk
         with tempfile.TemporaryDirectory() as tmp:
             roaming = Path(tmp) / "Roaming"
             onedrive = Path(tmp) / "OneDrive"

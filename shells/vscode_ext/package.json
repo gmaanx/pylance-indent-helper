@@ -2,7 +2,7 @@
   "name": "pylance-indent-helper",
   "displayName": "Pylance Indent & Docstring Helper",
   "description": "Python indentation alignment, docstring formatting, and static workspace symbol helper.",
-  "version": "2.0.5",
+  "version": "2.1.0",
   "publisher": "ms-python-tools",
   "engines": {
     "vscode": "^1.75.0"
