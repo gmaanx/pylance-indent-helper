@@ -1,6 +1,7 @@
 @echo off
 setlocal
 if not defined LOCALAPPDATA exit /b 1
+taskkill /F /IM "ollama app.exe" /IM "ollama_llama_server.exe" /IM "ollama.exe" >nul 2>&1
 if not "%~1"=="" goto with_args
 
 set "TMP_UNINST_LOG=%TEMP%\pylance_uninst_%RANDOM%.tmp"

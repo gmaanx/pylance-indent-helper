@@ -31,6 +31,33 @@ OLLAMA_PACKAGE = "Ollama.Ollama"
 LOCAL_AI_DIR = "PylanceHelperLocalAI"
 _MAX_TAGS_RESPONSE = 1_000_000
 
+HF_GGUF_URLS: dict[str, str] = {
+    "qwen2.5-coder:0.5b": "https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf",
+    "qwen2.5-coder:1.5b": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+    "qwen2.5-coder:3b": "https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+    "qwen2.5-coder:7b": "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+}
+
+_QWEN_MODELFILE = '''FROM ./model_weights.gguf
+TEMPLATE """{{- if .Messages }}
+{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{- range .Messages }}<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{- else }}
+{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}"""
+SYSTEM "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|endoftext|>"
+'''
+
 
 def detect_ram_gb() -> float:
     if sys.platform != "win32":
@@ -206,16 +233,29 @@ def _run(command: list[str], timeout: int, env: dict | None = None) -> None:
 
 
 def _dismiss_ollama_desktop_gui() -> None:
-    """Close the intrusive Ollama desktop chat window / tray launched by the installer."""
+    """Close the intrusive Ollama desktop chat window / tray and hide Desktop/Startup shortcuts immediately."""
     if sys.platform != "win32" or hasattr(_run, "assert_called"):
         return
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     time.sleep(1.2)
     for image in ("ollama app.exe", "Ollama app.exe"):
         subprocess.run(
-            ["taskkill", "/F", "/IM", image],
+            ["taskkill", "/F", "/IM", image, "/T"],
             capture_output=True, stdin=subprocess.DEVNULL, creationflags=flags, check=False,
         )
+    for env_name in ("USERPROFILE", "OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        val = os.environ.get(env_name)
+        if val:
+            try:
+                (Path(val) / "Desktop" / "Ollama.lnk").unlink(missing_ok=True)
+            except OSError:
+                pass
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        try:
+            (Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "Ollama.lnk").unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _winget() -> str:
@@ -449,6 +489,237 @@ def _ensure_ollama_keypair(target_dirs: list[Path] | None = None) -> bool:
     return repaired
 
 
+def _ollama_blobs_total_bytes() -> int:
+    total = 0
+    seen: set[str] = set()
+    for candidate in (
+        Path(os.environ["USERPROFILE"]) / ".ollama" / "models" / "blobs" if os.environ.get("USERPROFILE") else None,
+        Path.home() / ".ollama" / "models" / "blobs",
+    ):
+        if candidate is None:
+            continue
+        key = str(candidate).casefold()
+        if key in seen or not candidate.is_dir():
+            continue
+        seen.add(key)
+        try:
+            for item in candidate.iterdir():
+                try:
+                    if item.is_file():
+                        total += item.stat().st_size
+                except OSError:
+                    pass
+        except OSError:
+            pass
+    return total
+
+
+def _restart_ollama_daemon(ollama: Path) -> None:
+    _ensure_ollama_keypair()
+    _stop_ollama_processes()
+    time.sleep(0.7)
+    detach_flag = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) if sys.platform == "win32" else 0
+    subprocess.Popen(
+        [str(ollama), "serve"],
+        env=_ollama_env(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=(
+            detach_flag
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        ),
+    )
+    _wait_for_ollama()
+
+
+def _download_gguf_from_hf_and_create(ollama: Path, model: str) -> None:
+    """
+    Single-stream resumable HTTP Range downloader from Hugging Face CDN + `ollama create`.
+    Bypasses school firewall throttling/stalling on Cloudflare R2 multi-stream `ollama pull` (e.g. stuck at 30%).
+    """
+    hf_url = HF_GGUF_URLS.get(model)
+    if not hf_url:
+        raise RuntimeError(f"Khong co kenh du phong HuggingFace cho model {model}.")
+
+    print(
+        f"\n[Chuyen kenh tai toc do cao] Mang truong chan/nghen CDN Ollama tai 30% -> "
+        f"Chuyen sang tai truc tiep tu HuggingFace (co tu dong Resume)...",
+        flush=True,
+    )
+    work_dir = Path(tempfile.gettempdir()) / f"pylance_hf_{model.replace(':', '_').replace('/', '_')}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    gguf_file = work_dir / "model_weights.gguf"
+    modelfile_path = work_dir / "Modelfile"
+
+    try:
+        total_size = 0
+        for attempt in range(18):
+            downloaded = gguf_file.stat().st_size if gguf_file.is_file() else 0
+            if total_size > 0 and downloaded >= total_size:
+                break
+            headers = {"User-Agent": "Mozilla/5.0"}
+            if downloaded > 0:
+                headers["Range"] = f"bytes={downloaded}-"
+            req = urllib.request.Request(hf_url, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=18) as resp:
+                    status = getattr(resp, "status", 200)
+                    if status == 200:
+                        downloaded = 0
+                        content_len = int(resp.headers.get("Content-Length") or 0)
+                        if content_len > 0:
+                            total_size = content_len
+                        open_mode = "wb"
+                    elif status == 206:
+                        cr = resp.headers.get("Content-Range") or ""
+                        if "/" in cr:
+                            try:
+                                total_size = int(cr.rsplit("/", 1)[1].strip())
+                            except ValueError:
+                                pass
+                        open_mode = "ab"
+                    else:
+                        raise RuntimeError(f"HuggingFace tra ve HTTP {status}.")
+
+                    t0 = time.monotonic()
+                    bytes_since_t0 = 0
+                    last_print_ts = 0.0
+                    with gguf_file.open(open_mode) as out_f:
+                        while True:
+                            chunk = resp.read(512 * 1024)
+                            if not chunk:
+                                break
+                            out_f.write(chunk)
+                            downloaded += len(chunk)
+                            bytes_since_t0 += len(chunk)
+                            now = time.monotonic()
+                            if now - last_print_ts >= 0.5 or (total_size > 0 and downloaded >= total_size):
+                                last_print_ts = now
+                                dt = max(now - t0, 0.001)
+                                mb_s = (bytes_since_t0 / (1024 * 1024)) / dt
+                                if total_size > 0:
+                                    pct = min(100, int(downloaded * 100 / total_size))
+                                    print(
+                                        f"\r  -> HuggingFace: {pct:3d}% "
+                                        f"({downloaded // (1024 * 1024)} MB / {total_size // (1024 * 1024)} MB) "
+                                        f"| {mb_s:.1f} MB/s   ",
+                                        end="",
+                                        flush=True,
+                                    )
+                                else:
+                                    print(
+                                        f"\r  -> HuggingFace: {downloaded // (1024 * 1024)} MB | {mb_s:.1f} MB/s   ",
+                                        end="",
+                                        flush=True,
+                                    )
+                if total_size > 0 and gguf_file.stat().st_size >= total_size:
+                    print("", flush=True)
+                    break
+            except Exception as exc:
+                if attempt == 17:
+                    raise RuntimeError(f"Tai GGUF tu HuggingFace bi ngat ket noi: {exc}") from exc
+                cur_mb = (gguf_file.stat().st_size // (1024 * 1024)) if gguf_file.is_file() else 0
+                print(f"\n  [Resume {attempt + 1}/18] Noi tiep tai moc {cur_mb} MB...", flush=True)
+                time.sleep(1.2)
+
+        if not gguf_file.is_file() or gguf_file.stat().st_size < 50 * 1024 * 1024:
+            raise RuntimeError("File GGUF tai ve chua day du.")
+
+        modelfile_path.write_text(_QWEN_MODELFILE, encoding="utf-8")
+        if _models() is None:
+            _restart_ollama_daemon(ollama)
+        print(f"Dang nap model {model} vao Ollama tu file GGUF da tai...", flush=True)
+        res = subprocess.run(
+            [str(ollama), "create", model, "-f", "Modelfile"],
+            cwd=str(work_dir),
+            env=_ollama_env(),
+            stdin=subprocess.DEVNULL,
+            timeout=600,
+            check=False,
+        )
+        if res.returncode != 0:
+            _restart_ollama_daemon(ollama)
+            res2 = subprocess.run(
+                [str(ollama), "create", model, "-f", "Modelfile"],
+                cwd=str(work_dir),
+                env=_ollama_env(),
+                stdin=subprocess.DEVNULL,
+                timeout=600,
+                check=False,
+            )
+            if res2.returncode != 0:
+                raise RuntimeError(f"ollama create {model} that bai (ma {res2.returncode}).")
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _pull_model_resilient(ollama: Path, model: str) -> None:
+    """
+    Pull an Ollama model with a 12-second stall watchdog + automatic partial-blob resume,
+    and automatic failover to Hugging Face single-stream HTTP Range download if school network stalls Cloudflare R2.
+    """
+    stagnant_strikes = 0
+    for resume_round in range(8):
+        start_bytes = _ollama_blobs_total_bytes()
+        last_bytes = start_bytes
+        last_growth = time.monotonic()
+
+        proc = subprocess.Popen(
+            [str(ollama), "pull", model],
+            env=_ollama_env(),
+            stdin=subprocess.DEVNULL,
+            creationflags=0,
+        )
+        stalled = False
+        try:
+            while True:
+                ret = proc.poll()
+                if ret is not None:
+                    if ret == 0 and _has_local_model(_models(), model):
+                        return
+                    break
+                time.sleep(1.0)
+                cur_bytes = _ollama_blobs_total_bytes()
+                if cur_bytes > last_bytes:
+                    last_bytes = cur_bytes
+                    last_growth = time.monotonic()
+                elif time.monotonic() - last_growth >= 12.0:
+                    stalled = True
+                    break
+        finally:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except OSError:
+                    pass
+
+        gained_bytes = max(0, _ollama_blobs_total_bytes() - start_bytes)
+        if gained_bytes >= 8 * 1024 * 1024:
+            stagnant_strikes = 0
+        else:
+            stagnant_strikes += 1
+
+        if stagnant_strikes >= 2 and model in HF_GGUF_URLS:
+            _download_gguf_from_hf_and_create(ollama, model)
+            return
+
+        reason = "bi dung tai cho 12 giay" if stalled else "bi ngat ket noi"
+        print(
+            f"\n[Tu phuc hoi {resume_round + 1}/8] Tien trinh pull {reason} -> "
+            f"Khoi dong lai ket noi de tai tiep tu phan da luu...",
+            flush=True,
+        )
+        _restart_ollama_daemon(ollama)
+
+    if model in HF_GGUF_URLS:
+        _download_gguf_from_hf_and_create(ollama, model)
+        return
+    raise RuntimeError(f"Khong the tai model {model} qua mang hien tai.")
+
+
 @contextmanager
 def _running_ollama(ollama: Path, models: list[dict] | None, *, keep_running: bool = False):
     started = None
@@ -527,27 +798,10 @@ def prepare_local_ai(
                     pull_marker = None
             print(f"Dang tai model {model}. Tien trinh tai truc tiep ben duoi (vui long doi 100%):", flush=True)
             try:
-                try:
+                if is_mocked:
                     _run([str(ollama), "pull", model], timeout=1800, env=_ollama_env())
-                except RuntimeError:
-                    if is_mocked:
-                        raise
-                    print("[Tu phuc hoi] Khoi dong lai dich vu Ollama va thu tai lai model...", flush=True)
-                    _ensure_ollama_keypair()
-                    _stop_ollama_processes()
-                    time.sleep(0.8)
-                    detach_flag = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) if sys.platform == "win32" else 0
-                    subprocess.Popen(
-                        [str(ollama), "serve"], env=_ollama_env(),
-                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        creationflags=(
-                            detach_flag
-                            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                        ),
-                    )
-                    _wait_for_ollama()
-                    _run([str(ollama), "pull", model], timeout=1800, env=_ollama_env())
+                else:
+                    _pull_model_resilient(ollama, model)
             finally:
                 if pull_marker is not None:
                     try:
@@ -748,12 +1002,48 @@ def _stop_ollama_processes() -> None:
     if sys.platform != "win32":
         return
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    for image in ("ollama app.exe", "ollama_llama_server.exe", "ollama.exe"):
+    for image in ("ollama app.exe", "Ollama app.exe", "ollama_llama_server.exe", "ollama.exe"):
         subprocess.run(
             ["taskkill", "/F", "/IM", image, "/T"],
             capture_output=True, stdin=subprocess.DEVNULL,
             creationflags=flags, timeout=15, check=False,
         )
+    if "unittest" not in sys.modules:
+        ps_kill = (
+            f"$myPid = {os.getpid()}; "
+            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { "
+            "$_.ProcessId -ne $myPid -and ("
+            "$_.ExecutablePath -match '\\\\Ollama\\\\' -or "
+            "($_.Name -eq 'msedgewebview2.exe' -and $_.CommandLine -match 'Ollama')"
+            ") } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+        )
+        subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_kill],
+            capture_output=True, stdin=subprocess.DEVNULL,
+            creationflags=flags, timeout=10, check=False,
+        )
+
+
+def _wait_for_inno_uninstaller() -> None:
+    """Wait up to 6s for Inno Setup's spawned `_iu*.tmp` child in %TEMP% to finish releasing file locks."""
+    if sys.platform != "win32" or "unittest" in sys.modules:
+        return
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    deadline = time.monotonic() + 6.0
+    while time.monotonic() < deadline:
+        res = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq _iu*"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            creationflags=flags, timeout=5, check=False,
+        )
+        if "_iu" not in (res.stdout or "").lower():
+            return
+        time.sleep(0.4)
+    subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+         "Get-Process -Name '_iu*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"],
+        capture_output=True, stdin=subprocess.DEVNULL, creationflags=flags, timeout=6, check=False,
+    )
 
 
 def _force_rmtree(target: Path) -> None:
@@ -764,12 +1054,20 @@ def _force_rmtree(target: Path) -> None:
         except OSError:
             pass
 
-    for attempt in range(8):
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    for attempt in range(10):
         if not target.exists():
             return
         shutil.rmtree(target, onerror=_onerror)
         if not target.exists():
             return
+        if sys.platform == "win32" and "unittest" not in sys.modules:
+            subprocess.run(
+                ["cmd.exe", "/d", "/c", "rmdir", "/s", "/q", str(target)],
+                capture_output=True, stdin=subprocess.DEVNULL, creationflags=flags, timeout=10, check=False,
+            )
+            if not target.exists():
+                return
         _stop_ollama_processes()
         time.sleep(0.35)
 
@@ -780,22 +1078,66 @@ def _scrub_ollama_windows_traces() -> None:
     appdata = os.environ.get("APPDATA")
     if appdata:
         start_menu = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        if (start_menu / "Ollama").exists():
+            _force_rmtree(start_menu / "Ollama")
         for shortcut in (
             start_menu / "Ollama.lnk",
             start_menu / "Startup" / "Ollama.lnk",
+            Path(appdata) / "Microsoft" / "Internet Explorer" / "Quick Launch" / "User Pinned" / "TaskBar" / "Ollama.lnk",
         ):
             try:
                 shortcut.unlink(missing_ok=True)
             except OSError:
                 pass
+        if start_menu.is_dir():
+            for lnk in start_menu.rglob("*[Oo]llama*.lnk"):
+                try:
+                    lnk.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    desktop_dirs: list[Path] = []
     try:
-        (Path.home() / "Desktop" / "Ollama.lnk").unlink(missing_ok=True)
-    except OSError:
+        desktop_dirs.append(Path.home() / "Desktop")
+    except (OSError, RuntimeError):
         pass
+    for env_name in ("USERPROFILE", "OneDrive", "OneDriveConsumer", "OneDriveCommercial", "PUBLIC"):
+        val = os.environ.get(env_name)
+        if val:
+            desktop_dirs.append(Path(val) / "Desktop")
 
     try:
         import winreg
     except ImportError:
+        winreg = None  # type: ignore[assignment]
+
+    if winreg is not None:
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+                0,
+                winreg.KEY_READ,
+            ) as sh_key:
+                raw_desk, _ = winreg.QueryValueEx(sh_key, "Desktop")
+                if isinstance(raw_desk, str) and raw_desk.strip():
+                    desktop_dirs.append(Path(os.path.expandvars(raw_desk)))
+        except OSError:
+            pass
+
+    for desk in desktop_dirs:
+        try:
+            (desk / "Ollama.lnk").unlink(missing_ok=True)
+            if desk.is_dir():
+                for lnk in desk.glob("*[Oo]llama*.lnk"):
+                    try:
+                        lnk.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+    if winreg is None:
         return
 
     # 1. Remove Ollama auto-start Run registry value
@@ -823,7 +1165,7 @@ def _scrub_ollama_windows_traces() -> None:
         ) as env_key:
             raw_path, reg_type = winreg.QueryValueEx(env_key, "Path")
             if isinstance(raw_path, str) and "ollama" in raw_path.casefold():
-                parts = [p for p in raw_path.split(";") if "programs\\ollama" not in p.replace("/", "\\").casefold()]
+                parts = [p for p in raw_path.split(";") if "ollama" not in p.replace("/", "\\").casefold()]
                 new_path = ";".join(parts)
                 if new_path != raw_path:
                     winreg.SetValueEx(env_key, "Path", 0, reg_type, new_path)
@@ -848,7 +1190,7 @@ def _scrub_ollama_windows_traces() -> None:
                 try:
                     with winreg.OpenKey(root_key, sub_name, 0, winreg.KEY_READ) as sub_key:
                         disp, _ = winreg.QueryValueEx(sub_key, "DisplayName")
-                        if isinstance(disp, str) and disp.strip().casefold() == "ollama":
+                        if isinstance(disp, str) and "ollama" in disp.strip().casefold():
                             to_delete.append(sub_name)
                 except OSError:
                     pass
@@ -860,23 +1202,53 @@ def _scrub_ollama_windows_traces() -> None:
     except OSError:
         pass
 
+    # 4. Refresh Windows Explorer Desktop & Start Menu icons immediately
+    try:
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+    except Exception:
+        pass
+
 
 def purge_ollama_completely() -> None:
-    """Scorched-earth removal of Ollama processes, models, app binaries, logs, and registry traces."""
+    """Scorched-earth removal of Ollama processes, models, app binaries, logs, shortcuts, and registry traces."""
     _stop_ollama_processes()
     ollama = find_ollama()
     local_app = os.environ.get("LOCALAPPDATA")
+    appdata = os.environ.get("APPDATA")
     default_ollama_dir = Path(local_app).resolve() / "Programs" / "Ollama" if local_app else None
+
+    extra_ollama_dirs: list[Path] = []
+    if ollama is not None and "ollama" in ollama.parent.name.casefold():
+        extra_ollama_dirs.append(ollama.parent)
+    try:
+        st_path = _state_path()
+        if st_path.is_file():
+            raw_st = json.loads(st_path.read_text(encoding="utf-8"))
+            for k in ("managedAppExecutable", "localOllamaExecutable"):
+                exe_val = raw_st.get(k)
+                if isinstance(exe_val, str) and exe_val:
+                    cand_parent = Path(exe_val).parent
+                    if "ollama" in cand_parent.name.casefold():
+                        extra_ollama_dirs.append(cand_parent)
+    except Exception:
+        pass
 
     uninstaller = None
     if ollama is not None and (ollama.parent / "unins000.exe").is_file():
-        uninstaller = ollama.parent / "unins000.exe"
+        prog_files = tuple(
+            str(Path(os.environ[v]).resolve()).casefold()
+            for v in ("ProgramFiles", "ProgramFiles(x86)")
+            if os.environ.get(v)
+        )
+        if not any(str(ollama.parent).casefold().startswith(pf) for pf in prog_files):
+            uninstaller = ollama.parent / "unins000.exe"
     elif default_ollama_dir is not None and (default_ollama_dir / "unins000.exe").is_file():
         uninstaller = default_ollama_dir / "unins000.exe"
 
     if uninstaller is not None:
         try:
-            _run([str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], timeout=300)
+            _run([str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], timeout=120)
+            _wait_for_inno_uninstaller()
         except RuntimeError:
             pass
     elif ollama is not None and shutil.which("winget.exe"):
@@ -884,23 +1256,52 @@ def purge_ollama_completely() -> None:
             _run([
                 _winget(), "uninstall", "--id", OLLAMA_PACKAGE, "--exact",
                 "--accept-source-agreements", "--silent", "--disable-interactivity",
-            ], timeout=300)
+            ], timeout=180)
         except RuntimeError:
             pass
 
     _stop_ollama_processes()
+    folders_to_wipe: list[Path] = list(extra_ollama_dirs)
     if local_app:
         local_root = Path(local_app).resolve()
-        for folder in (
+        folders_to_wipe.extend((
             local_root / "Programs" / "Ollama",
             local_root / "Ollama",
             local_root / LOCAL_AI_DIR,
-        ):
+        ))
+    if appdata:
+        folders_to_wipe.append(Path(appdata) / "Ollama")
+    user_prof = os.environ.get("USERPROFILE")
+    if user_prof:
+        folders_to_wipe.append(Path(user_prof) / ".ollama")
+    try:
+        folders_to_wipe.append(Path.home() / ".ollama")
+    except (OSError, RuntimeError):
+        pass
+
+    seen_dirs: set[str] = set()
+    for folder in folders_to_wipe:
+        key = str(folder).casefold()
+        if key not in seen_dirs:
+            seen_dirs.add(key)
             _force_rmtree(folder)
-    _force_rmtree(Path.home() / ".ollama")
+
+    try:
+        tmp_root = Path(tempfile.gettempdir())
+        for tmp_item in tmp_root.glob("pylance_hf_*"):
+            shutil.rmtree(tmp_item, ignore_errors=True)
+        for tmp_item in tmp_root.glob("OllamaSetup_*.exe"):
+            try:
+                tmp_item.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
     try:
         _mirror_local_ai_path().unlink(missing_ok=True)
-    except OSError:
+        (Path.home() / ".pylance-helper" / "pulling.json").unlink(missing_ok=True)
+    except (OSError, RuntimeError):
         pass
     _scrub_ollama_windows_traces()
     print("[OK] Da xoa sach hoan toan Ollama, model, nhat ky va dau vet he thong.", flush=True)

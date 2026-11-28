@@ -371,15 +371,17 @@ def install_all(
         if ide_cli is None:
             print(f"Cai extension trong IDE qua Extensions > Install from VSIX: {vsix}")
         print("Neu IDE dang mo, dung Reload Window de nap ban moi.")
-        if wants_local or local_model is not None:
-            try:
-                if auto_model and local_model is None:
-                    optional = install_local_ai(None, auto_model=True)
-                else:
-                    optional = install_local_ai(local_model)
-            except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                raise RuntimeError(f"Da cai tich hop IDE. Local AI chua san sang. {exc}") from exc
-            print(f"[OK] Local AI san sang voi {optional['localModel']}.")
+
+    # Release PylanceHelper.lock BEFORE potentially long Ollama model download so Alt+0 / go_cai_dat never blocks!
+    if wants_local or local_model is not None:
+        try:
+            if auto_model and local_model is None:
+                optional = install_local_ai(None, auto_model=True)
+            else:
+                optional = install_local_ai(local_model)
+        except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f"Da cai tich hop IDE. Local AI chua san sang. {exc}") from exc
+        print(f"[OK] Local AI san sang voi {optional['localModel']}.")
 
 
 def main() -> int:

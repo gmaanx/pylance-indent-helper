@@ -714,6 +714,39 @@ class ExamUpgradeTests(unittest.TestCase):
                     derived = subprocess.check_output([ssh_kg, "-y", "-f", str(priv)], text=True).strip()
                     self.assertEqual(derived, pub.read_text(encoding="ascii").strip())
 
+    def test_pull_resilient_falls_back_to_hf_and_scrub_removes_startmenu_folder_and_onedrive_icon(self):
+        from unittest.mock import MagicMock
+
+        # 1. When `ollama pull` exits non-zero / stalls twice with 0 bytes gained, automatically switches to HuggingFace GGUF!
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = 1
+        fake_proc.returncode = 1
+        with patch.object(local_ai.subprocess, "Popen", return_value=fake_proc), \
+                patch.object(local_ai, "_ollama_blobs_total_bytes", return_value=120 * 1024 * 1024), \
+                patch.object(local_ai, "_restart_ollama_daemon") as restart_daemon, \
+                patch.object(local_ai, "_download_gguf_from_hf_and_create") as hf_dl:
+            local_ai._pull_model_resilient(Path("C:/Ollama/ollama.exe"), "qwen2.5-coder:0.5b")
+        hf_dl.assert_called_once_with(Path("C:/Ollama/ollama.exe"), "qwen2.5-coder:0.5b")
+        restart_daemon.assert_called_once()
+
+        # 2. _scrub_ollama_windows_traces deletes Start Menu\Programs\Ollama\ folder + OneDrive\Desktop\Ollama.lnk
+        with tempfile.TemporaryDirectory() as tmp:
+            roaming = Path(tmp) / "Roaming"
+            onedrive = Path(tmp) / "OneDrive"
+            sm_ollama_dir = roaming / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Ollama"
+            sm_ollama_dir.mkdir(parents=True)
+            (sm_ollama_dir / "Ollama.lnk").write_text("lnk", encoding="utf-8")
+            (onedrive / "Desktop").mkdir(parents=True)
+            (onedrive / "Desktop" / "Ollama.lnk").write_text("lnk", encoding="utf-8")
+
+            with patch.dict("os.environ", {"APPDATA": str(roaming), "OneDrive": str(onedrive), "USERPROFILE": tmp}), \
+                    patch.object(Path, "home", return_value=Path(tmp)), \
+                    patch.dict("sys.modules", {"winreg": None}):
+                local_ai._scrub_ollama_windows_traces()
+
+            self.assertFalse(sm_ollama_dir.exists())
+            self.assertFalse((onedrive / "Desktop" / "Ollama.lnk").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
