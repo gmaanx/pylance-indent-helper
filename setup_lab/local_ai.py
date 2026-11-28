@@ -350,24 +350,26 @@ def prepare_local_ai(
 
     with _running_ollama(ollama, models, keep_running=True) as models:
         if not _has_local_model(models, model):
-            pull_marker = Path.home() / ".pylance-helper" / "pulling.json"
+            pull_marker: Path | None = None
             if not hasattr(_run, "assert_called"):
                 try:
+                    pull_marker = Path.home() / ".pylance-helper" / "pulling.json"
                     pull_marker.parent.mkdir(parents=True, exist_ok=True)
                     pull_marker.write_text(
                         json.dumps({"model": model, "startedAt": time.time()}),
                         encoding="utf-8",
                     )
-                except OSError:
-                    pass
-            print(f"Dang tai model {model} (~986 MB). Tien trinh tai truc tiep ben duoi (vui long doi 100%):", flush=True)
+                except (OSError, RuntimeError):
+                    pull_marker = None
+            print(f"Dang tai model {model}. Tien trinh tai truc tiep ben duoi (vui long doi 100%):", flush=True)
             try:
                 _run([str(ollama), "pull", model], timeout=1800, env=_ollama_env())
             finally:
-                try:
-                    pull_marker.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                if pull_marker is not None:
+                    try:
+                        pull_marker.unlink(missing_ok=True)
+                    except OSError:
+                        pass
             downloaded = _models()
             if not _has_local_model(downloaded, model):
                 raise RuntimeError(f"Ollama chua bao model {model} san sang sau khi tai.")
