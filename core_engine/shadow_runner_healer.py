@@ -27,12 +27,22 @@ GRAPH_SEARCH_ALGOS = {
     "greedy",
     "astar",
 }
+LOCAL_SEARCH_ALGOS = {
+    "hill_climbing",
+    "hill_climbing_random_restarts",
+    "hill_climbing_stochastic",
+    "simulated_annealing",
+    "beam",
+    "beam_best_first",
+    "genetic",
+}
+NO_GRAPH_SEARCH_ALGOS = LOCAL_SEARCH_ALGOS | {"backtrack", "min_conflicts", "convert_to_binary"}
 
 
 def _make_hashable_helper_node() -> ast.FunctionDef:
     helper_src = (
         "def _to_hashable(obj):\n"
-        "    if isinstance(obj, list):\n"
+        "    if isinstance(obj, (list, tuple)):\n"
         "        return tuple(_to_hashable(x) for x in obj)\n"
         "    if isinstance(obj, dict):\n"
         "        return tuple(sorted((k, _to_hashable(v)) for k, v in obj.items()))\n"
@@ -44,12 +54,15 @@ def _make_hashable_helper_node() -> ast.FunctionDef:
 
 
 class _SimpleAIHealerTransformer(ast.NodeTransformer):
-    def __init__(self, csp_constraint_funcs: Set[str]) -> None:
+    def __init__(self, csp_constraint_funcs: Set[str], *, uses_local_search: bool = False) -> None:
         super().__init__()
         self.csp_funcs = csp_constraint_funcs
+        self.uses_local_search = uses_local_search
         self.needs_hashable_helper = False
         self.in_search_problem_class = False
         self.is_string_problem = False
+        self.search_node_vars: Set[str] = set()
+        self.csp_dict_vars: Set[str] = set()
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
         self.generic_visit(node)
@@ -69,6 +82,26 @@ class _SimpleAIHealerTransformer(ast.NodeTransformer):
                         args=[node.value],
                         keywords=[],
                     )
+        # Track variables holding SimpleAI SearchNode results (`res = astar(...)` / `hill_climbing_random_restarts(...)`)
+        if isinstance(node.value, ast.Call):
+            fn = node.value.func.id if isinstance(node.value.func, ast.Name) else (
+                node.value.func.attr if isinstance(node.value.func, ast.Attribute) else ""
+            )
+            if fn in (GRAPH_SEARCH_ALGOS | LOCAL_SEARCH_ALGOS):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        self.search_node_vars.add(target.id)
+            elif fn in ("backtrack", "min_conflicts"):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        self.csp_dict_vars.add(target.id)
+        return node
+
+    def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+        self.generic_visit(node)
+        # Bay 8: backtrack(problem) tra ve dict truc tiep (khong co .state nhu SearchNode)
+        if node.attr == "state" and isinstance(node.value, ast.Name) and node.value.id in self.csp_dict_vars:
+            return ast.Name(id=node.value.id, ctx=node.ctx)
         return node
 
     def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
@@ -87,11 +120,30 @@ class _SimpleAIHealerTransformer(ast.NodeTransformer):
             self.in_search_problem_class = True
             self.is_string_problem = "Xau" in node.name or "Hello" in node.name or "String" in node.name
             self._heal_search_problem_init(node)
+            self._heal_goal_test_alias(node)
+            if self.uses_local_search:
+                self._heal_local_search_value(node)
 
         self.generic_visit(node)
         self.in_search_problem_class = prev_sp
         self.is_string_problem = prev_str
         return node
+
+    def _heal_goal_test_alias(self, cls_node: ast.ClassDef) -> None:
+        # Bay 6: LLM viet nham `def goal_test(self, state):` (kieu AIMA) thay vi `def is_goal(self, state):` cua SimpleAI
+        method_names = {item.name for item in cls_node.body if isinstance(item, ast.FunctionDef)}
+        if "is_goal" not in method_names and "goal_test" in method_names:
+            for item in cls_node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "goal_test":
+                    item.name = "is_goal"
+                    break
+
+    def _heal_local_search_value(self, cls_node: ast.ClassDef) -> None:
+        # Bay 5: Local search (hill_climbing, simulated_annealing, genetic, beam) can ham value(self, state)
+        method_names = {item.name for item in cls_node.body if isinstance(item, ast.FunctionDef)}
+        if "value" not in method_names and "heuristic" in method_names:
+            val_fn = ast.parse("def value(self, state):\n    return -self.heuristic(state)\n").body[0]
+            cls_node.body.append(val_fn)
 
     def _heal_search_problem_init(self, cls_node: ast.ClassDef) -> None:
         # Bay 3: Quen goi super().__init__(initial_state) trong SearchProblem.__init__
@@ -144,11 +196,18 @@ class _SimpleAIHealerTransformer(ast.NodeTransformer):
                         insert_idx = 1
                     node.body.insert(insert_idx, unpack_stmt)
 
-        # Bay 1B: result(self, state, action) tra ve kieu list (unhashable)
-        if self.in_search_problem_class and node.name == "result":
+        # Bay 1B: result(self, state, action) tra ve kieu list/unhashable (ke ca qua bien trung gian `return new_state`)
+        if self.in_search_problem_class and node.name == "result" and not self.is_string_problem:
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Return) and sub.value is not None:
-                    if isinstance(sub.value, (ast.List, ast.ListComp, ast.Dict, ast.Set)):
+                    already_wrapped = (
+                        isinstance(sub.value, ast.Call)
+                        and isinstance(sub.value.func, ast.Name)
+                        and sub.value.func.id in ("_to_hashable", "tuple", "frozenset", "str", "int", "float", "bool")
+                    )
+                    if not already_wrapped and isinstance(
+                        sub.value, (ast.List, ast.ListComp, ast.Dict, ast.Set, ast.Name, ast.Tuple, ast.Subscript)
+                    ):
                         self.needs_hashable_helper = True
                         sub.value = ast.Call(
                             func=ast.Name(id="_to_hashable", ctx=ast.Load()),
@@ -161,14 +220,23 @@ class _SimpleAIHealerTransformer(ast.NodeTransformer):
 
     def visit_Call(self, node: ast.Call) -> ast.AST:
         self.generic_visit(node)
-        # Bay 4: Quen graph_search=True khi goi thuat toan tim kiem SimpleAI
+        # Bay 4: Quen graph_search=True khi goi thuat toan tim kiem SimpleAI (hoac truyen nham vao local search / CSP)
         func_name = None
         if isinstance(node.func, ast.Name):
             func_name = node.func.id
         elif isinstance(node.func, ast.Attribute):
             func_name = node.func.attr
 
-        if func_name in GRAPH_SEARCH_ALGOS and not self.is_string_problem:
+        if func_name in ("tuple", "list") and len(node.args) == 1 and isinstance(node.args[0], ast.Name):
+            if node.args[0].id in self.search_node_vars:
+                node.args[0] = ast.Attribute(
+                    value=ast.Name(id=node.args[0].id, ctx=ast.Load()),
+                    attr="state",
+                    ctx=ast.Load(),
+                )
+        elif func_name in NO_GRAPH_SEARCH_ALGOS:
+            node.keywords = [kw for kw in node.keywords if kw.arg != "graph_search"]
+        elif func_name in GRAPH_SEARCH_ALGOS and not self.is_string_problem:
             has_gs = any(kw.arg == "graph_search" for kw in node.keywords)
             has_kwargs_unpack = any(kw.arg is None for kw in node.keywords)
             if not has_gs and not has_kwargs_unpack and len(node.args) == 1:
@@ -191,6 +259,122 @@ def _collect_csp_constraint_func_names(tree: ast.AST) -> Set[str]:
     return names
 
 
+def _detect_local_search_usage(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and "local" in node.module:
+            return True
+        if isinstance(node, ast.Call):
+            fn = node.func.id if isinstance(node.func, ast.Name) else (
+                node.func.attr if isinstance(node.func, ast.Attribute) else ""
+            )
+            if fn in LOCAL_SEARCH_ALGOS:
+                return True
+    return False
+
+
+_AUTO_STDLIB_MODULES = {
+    "heapq", "math", "random", "itertools", "functools", "collections",
+    "re", "json", "copy", "bisect", "statistics", "time", "sys", "os", "unicodedata",
+}
+_AUTO_COLLECTIONS_SYMBOLS = {"deque", "defaultdict", "Counter"}
+_AUTO_SIMPLEAI_SEARCH_SYMBOLS = {
+    "SearchProblem", "CspProblem", "breadth_first", "depth_first", "uniform_cost", "greedy", "astar",
+    "backtrack", "MOST_CONSTRAINED_VARIABLE", "HIGHEST_DEGREE_VARIABLE", "LEAST_CONSTRAINING_VALUE", "min_conflicts",
+}
+_AUTO_SIMPLEAI_LOCAL_SYMBOLS = {
+    "hill_climbing", "hill_climbing_random_restarts", "hill_climbing_stochastic",
+    "simulated_annealing", "beam", "genetic",
+}
+
+
+def _inject_missing_stdlib_imports(code: str) -> str:
+    """Prepend missing standard library imports (e.g. `import heapq`, `import math`) without altering code formatting."""
+    if not code or not code.strip():
+        return code
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+
+    bound: Set[str] = set()
+    star_modules: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "*":
+                    if node.module:
+                        star_modules.add(node.module)
+                else:
+                    bound.add(alias.asname or alias.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound.add(node.name)
+            for arg_group in (node.args.posonlyargs, node.args.args, node.args.kwonlyargs):
+                for a in arg_group:
+                    bound.add(a.arg)
+            if node.args.vararg:
+                bound.add(node.args.vararg.arg)
+            if node.args.kwarg:
+                bound.add(node.args.kwarg.arg)
+        elif isinstance(node, ast.ClassDef):
+            bound.add(node.name)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bound.add(node.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+
+    missing_mods: List[str] = []
+    missing_coll: List[str] = []
+    missing_sa_search: List[str] = []
+    missing_sa_local: List[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            ident = node.id
+            if ident in bound:
+                continue
+            if ident in _AUTO_STDLIB_MODULES and ident not in missing_mods:
+                missing_mods.append(ident)
+            elif ident in _AUTO_COLLECTIONS_SYMBOLS and "collections" not in star_modules and ident not in missing_coll:
+                missing_coll.append(ident)
+            elif ident in _AUTO_SIMPLEAI_SEARCH_SYMBOLS and "simpleai.search" not in star_modules and ident not in missing_sa_search:
+                missing_sa_search.append(ident)
+            elif ident in _AUTO_SIMPLEAI_LOCAL_SYMBOLS and "simpleai.search.local" not in star_modules and ident not in missing_sa_local:
+                missing_sa_local.append(ident)
+
+    if not missing_mods and not missing_coll and not missing_sa_search and not missing_sa_local:
+        return code
+
+    import_lines: List[str] = [f"import {m}" for m in sorted(missing_mods)]
+    if missing_coll:
+        import_lines.append(f"from collections import {', '.join(sorted(missing_coll))}")
+    if missing_sa_search:
+        import_lines.append(f"from simpleai.search import {', '.join(sorted(missing_sa_search))}")
+    if missing_sa_local:
+        import_lines.append(f"from simpleai.search.local import {', '.join(sorted(missing_sa_local))}")
+
+    src_lines = code.splitlines()
+    insert_at = 0
+    for idx, stmt in enumerate(tree.body):
+        if (
+            idx == 0
+            and isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Constant)
+            and isinstance(stmt.value.value, str)
+        ):
+            insert_at = getattr(stmt, "end_lineno", stmt.lineno)
+        elif isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
+            insert_at = getattr(stmt, "end_lineno", stmt.lineno)
+        else:
+            break
+    while insert_at < len(src_lines) and src_lines[insert_at].strip().startswith("#"):
+        insert_at += 1
+
+    new_lines = src_lines[:insert_at] + import_lines + src_lines[insert_at:]
+    return "\n".join(new_lines) + ("\n" if code.endswith("\n") else "")
+
+
 def static_auto_heal(code: str) -> str:
     """
     Phân tích AST và tự động sửa các bẫy cú pháp đặc thù của SimpleAI.
@@ -198,6 +382,7 @@ def static_auto_heal(code: str) -> str:
     """
     if not code or not code.strip():
         return code
+    code = _inject_missing_stdlib_imports(code)
     try:
         tree = ast.parse(code)
     except SyntaxError:
@@ -206,8 +391,9 @@ def static_auto_heal(code: str) -> str:
     # Kiem tra xem code co dung SinhXauProblem khong (tranh ep graph_search neu khong can)
     is_str_prob = "SinhXauProblem" in code or "HelloProblem" in code
     csp_funcs = _collect_csp_constraint_func_names(tree)
+    uses_local = _detect_local_search_usage(tree)
 
-    transformer = _SimpleAIHealerTransformer(csp_funcs)
+    transformer = _SimpleAIHealerTransformer(csp_funcs, uses_local_search=uses_local)
     transformer.is_string_problem = is_str_prob
     healed_tree = transformer.visit(tree)
 
@@ -256,6 +442,7 @@ def static_auto_heal_preserve_style(code: str) -> str:
     """
     if not code or not code.strip():
         return code
+    code = _inject_missing_stdlib_imports(code)
     try:
         tree = ast.parse(code)
     except SyntaxError:
@@ -263,6 +450,17 @@ def static_auto_heal_preserve_style(code: str) -> str:
 
     needs_fix = False
     csp_funcs = _collect_csp_constraint_func_names(tree)
+    uses_local = _detect_local_search_usage(tree)
+    snode_vars: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            fn0 = node.value.func.id if isinstance(node.value.func, ast.Name) else (
+                node.value.func.attr if isinstance(node.value.func, ast.Attribute) else ""
+            )
+            if fn0 in (GRAPH_SEARCH_ALGOS | LOCAL_SEARCH_ALGOS):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        snode_vars.add(t.id)
 
     for node in ast.walk(tree):
         # Check Bay 1A: INITIAL = [...]
@@ -276,10 +474,27 @@ def static_auto_heal_preserve_style(code: str) -> str:
             args = [a.arg for a in node.args.args]
             if len(args) >= 2 and args[0] not in ("variables", "vars", "vars_tuple", "bien") and args[1] not in ("values", "vals", "vals_tuple", "gia_tri"):
                 needs_fix = True
-        # Check Bay 3: SearchProblem.__init__ missing super().__init__
+        # Check Bay 4 invalid graph_search on local/CSP
+        if isinstance(node, ast.Call):
+            fn = node.func.id if isinstance(node.func, ast.Name) else (
+                node.func.attr if isinstance(node.func, ast.Attribute) else ""
+            )
+            if fn in NO_GRAPH_SEARCH_ALGOS and any(kw.arg == "graph_search" for kw in node.keywords):
+                needs_fix = True
+            if fn in ("tuple", "list") and len(node.args) == 1 and isinstance(node.args[0], ast.Name) and node.args[0].id in snode_vars:
+                needs_fix = True
+        # Check Bay 3, Bay 1B, and Bay 5 on SearchProblem
         if isinstance(node, ast.ClassDef):
-            bases = [b.id for b in node.bases if isinstance(b, ast.Name)]
-            if "SearchProblem" in bases:
+            bases = [
+                b.id if isinstance(b, ast.Name) else (b.attr if isinstance(b, ast.Attribute) else "")
+                for b in node.bases
+            ]
+            if any("Problem" in bn or bn == "SearchProblem" for bn in bases):
+                method_names = {it.name for it in node.body if isinstance(it, ast.FunctionDef)}
+                if "is_goal" not in method_names and "goal_test" in method_names:
+                    needs_fix = True
+                if uses_local and "value" not in method_names and "heuristic" in method_names:
+                    needs_fix = True
                 for item in node.body:
                     if isinstance(item, ast.FunctionDef) and item.name == "__init__":
                         has_sup = any(
@@ -289,9 +504,17 @@ def static_auto_heal_preserve_style(code: str) -> str:
                         if not has_sup and len(item.args.args) >= 2:
                             needs_fix = True
                     if isinstance(item, ast.FunctionDef) and item.name == "result":
+                        body_builds_list = any(
+                            isinstance(s, (ast.List, ast.ListComp))
+                            or (isinstance(s, ast.Call) and isinstance(s.func, ast.Name) and s.func.id == "list")
+                            for s in ast.walk(item)
+                        )
                         for s in ast.walk(item):
-                            if isinstance(s, ast.Return) and isinstance(s.value, (ast.List, ast.ListComp, ast.Dict, ast.Set)):
-                                needs_fix = True
+                            if isinstance(s, ast.Return) and s.value is not None:
+                                if isinstance(s.value, (ast.List, ast.ListComp, ast.Dict, ast.Set)):
+                                    needs_fix = True
+                                elif body_builds_list and isinstance(s.value, ast.Name):
+                                    needs_fix = True
 
     if needs_fix:
         return static_auto_heal(code)
@@ -364,13 +587,21 @@ def shadow_execute(
     python_paths: List[str] = []
     if run_cwd:
         python_paths.append(run_cwd)
-    if ".venv" not in py_exe.lower():
-        for cand_site in (
-            Path(__file__).resolve().parents[1] / "site_pkgs",
-            Path(__file__).resolve().parents[1] / "setup_lab" / "offline_pkgs",
-        ):
-            if cand_site.exists():
-                python_paths.append(str(cand_site))
+    engine_parent = Path(__file__).resolve().parents[1]
+    extra_pkg_candidates = [
+        engine_parent / "site_pkgs",
+        engine_parent / "shared_pkgs",
+        engine_parent.parent / "shared_pkgs",
+        engine_parent / "setup_lab" / "offline_pkgs",
+    ]
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        extra_pkg_candidates.append(Path(local_appdata) / "Programs" / "PylanceHelper" / "shared_pkgs")
+    for cand_site in extra_pkg_candidates:
+        if cand_site.is_dir():
+            s_str = str(cand_site)
+            if s_str not in python_paths:
+                python_paths.append(s_str)
     if python_paths:
         cur_pp = env.get("PYTHONPATH", "")
         joined = os.pathsep.join(python_paths)

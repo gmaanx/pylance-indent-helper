@@ -55,6 +55,16 @@ _FUZZY_RE = re.compile(
     re.IGNORECASE,
 )
 
+_WATER_JUGS_VN_RE = re.compile(
+    r"^\s*(?:cau\s+\d+\s*:\s*)?(?:giai\s+)?(?:bai\s+toan\s+)?dong\s+nuoc(?:\s+bang\s+bfs)?"
+    r"\s+(?:voi\s+|co\s+)?(?P<count>\d)\s+binh(?:\s+co)?\s+dung\s+tich(?:\s+lan\s+luot)?(?:\s+la)?\s*:?\s*"
+    r"(?P<caps>\d+\s*(?:lit|l)?(?:\s*(?:,|va)\s*\d+\s*(?:lit|l)?)+)"
+    r"[.\s,;]+(?:trang\s+thai\s+)?ban\s+dau(?:\s+la)?\s*:?\s*(?P<start>[\(\[][\d,\s]+[\)\]])"
+    r"[.\s,;]+(?:can\s+|muc\s+tieu\s*(?:la\s*)?)?(?:dong\s+(?:duoc\s+)?(?:dung\s+)?|dat(?:\s+duoc)?\s+)?(?P<goal>\d+)\s*(?:lit|l)(?:\s+nuoc)?(?:\s+o\s+bat\s+ky\s+binh\s+nao)?"
+    r"(?:\s+bang\s+bfs)?(?:[.\s,;]+(?:in\s+ra\s+)?(?:cac\s+buoc|voi\s+so\s+buoc)\s+[^.]*)?\s*\.?\s*$",
+    re.IGNORECASE,
+)
+
 
 def _safe_eval(snippet: str) -> Any:
     return ast.literal_eval(snippet.strip())
@@ -216,6 +226,25 @@ def parse_natural_vietnamese_problem(raw_text: str) -> Optional[Dict[str, Any]]:
                     "alpha": m_fuzzy.group("alpha"),
                 }
         except (ValueError, SyntaxError, TypeError, AttributeError):
+            return None
+
+    # 6. Vietnamese Water Jugs (BFS shortest steps)
+    m_jugs = _WATER_JUGS_VN_RE.match(collapsed)
+    if m_jugs and "simpleai" not in collapsed.casefold():
+        try:
+            caps = [int(x) for x in re.findall(r"\d+", m_jugs.group("caps"))]
+            start_vec = list(_safe_eval(m_jugs.group("start")))
+            goal_liters = int(m_jugs.group("goal"))
+            expected_n = int(m_jugs.group("count"))
+            if len(caps) == expected_n and len(start_vec) == expected_n and 2 <= expected_n <= 6:
+                return {
+                    "type": "water_jugs",
+                    "capacities": caps,
+                    "start": start_vec,
+                    "goal": goal_liters,
+                    "algorithm": "bfs",
+                }
+        except (ValueError, SyntaxError, TypeError):
             return None
 
     return None

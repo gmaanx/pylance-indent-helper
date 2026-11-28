@@ -33,7 +33,17 @@ _PROMPT_RETURN_RE = re.compile(
 _IGNORED_NAMES = {
     "SearchProblem", "CspProblem", "Environment", "RLEnvironment",
     "Python", "main", "heuristic", "danh_gia", "kiem_tra", "func", "f", "g", "h",
+    "actions", "result", "is_goal", "cost", "value", "generate_random_state",
 }
+_VN_NON_CLASS_WORDS = {
+    "ke", "con", "cha", "co", "truu", "doi", "bieu", "mo", "quan", "tim",
+    "bai", "nguoi", "du", "cua", "cho", "nay", "do", "moi", "python", "thu",
+}
+_VALID_RTYPE_HEADS = {
+    "int", "float", "bool", "str", "bytes", "list", "dict", "tuple", "set", "frozenset",
+    "none", "any", "optional", "union", "sequence", "iterable", "mapping", "object",
+}
+_SIG_CAND_RE = re.compile(r"`?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
 def _has_own_value_return(fn_node: ast.AST) -> bool:
@@ -75,25 +85,13 @@ def _annotation_is_only_none(ann: Optional[ast.AST]) -> bool:
     return False
 
 
-def _extract_prompt_non_none_returns(prompt: str) -> Dict[str, str]:
-    if not prompt or not prompt.strip():
-        return {}
-    out: Dict[str, str] = {}
-    for m in _PROMPT_RETURN_RE.finditer(prompt):
-        fn_name = m.group("name").strip()
-        rtype = m.group("rtype").strip().rstrip(".,;:")
-        if rtype and rtype.lower() != "none":
-            out[fn_name] = rtype
-    return out
-
-
 def _extract_balanced_parens(text: str, open_paren_idx: int) -> Optional[str]:
     if open_paren_idx < 0 or open_paren_idx >= len(text) or text[open_paren_idx] != "(":
         return None
     depth = 0
     in_q: Optional[str] = None
     esc = False
-    for idx in range(open_paren_idx, min(len(text), open_paren_idx + 300)):
+    for idx in range(open_paren_idx, min(len(text), open_paren_idx + 360)):
         ch = text[idx]
         if in_q:
             if esc:
@@ -112,6 +110,60 @@ def _extract_balanced_parens(text: str, open_paren_idx: int) -> Optional[str]:
             if depth == 0:
                 return text[open_paren_idx + 1 : idx]
     return None
+
+
+def extract_prompt_typed_signatures(prompt: str) -> List[Tuple[str, str, str]]:
+    """
+    Extract `(func_name, params_inner, return_type_str)` for typed signatures like
+    `giai_8_puzzle_simpleai(start: tuple[int, ...], goal: tuple[int, ...] = (1, 2, 3)) -> int`,
+    supporting nested parentheses inside default values and type annotations.
+    """
+    if not prompt or not prompt.strip():
+        return []
+    found: List[Tuple[str, str, str]] = []
+    seen: Set[str] = set()
+    for m in _SIG_CAND_RE.finditer(prompt):
+        fn_name = m.group("name").strip()
+        if fn_name in ("if", "for", "while", "return", "print", "def", "class"):
+            continue
+        open_idx = m.end() - 1
+        inner = _extract_balanced_parens(prompt, open_idx)
+        if inner is None:
+            continue
+        close_idx = open_idx + 1 + len(inner)
+        tail = prompt[close_idx + 1 : close_idx + 90]
+        rt_m = re.match(r"\s*`?\s*->\s*`?([A-Za-z_][A-Za-z0-9_\[\],\s|.]*)", tail)
+        if not rt_m:
+            continue
+        rtype = rt_m.group(1).strip().rstrip(".,;:`")
+        head_m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", rtype)
+        if not head_m:
+            continue
+        head_tok = head_m.group(1)
+        # Skip inline value examples like `func('abc') -> True` where args are literals rather than parameter names
+        if head_tok in ("True", "False"):
+            continue
+        if head_tok.lower() not in _VALID_RTYPE_HEADS and not head_tok[0].isupper():
+            continue
+        stripped_inner = inner.strip()
+        if stripped_inner:
+            first_param = stripped_inner.split(",", 1)[0].split(":", 1)[0].split("=", 1)[0].strip()
+            if not re.fullmatch(r"\*{0,2}[A-Za-z_][A-Za-z0-9_]*", first_param):
+                continue
+        if fn_name not in seen:
+            seen.add(fn_name)
+            found.append((fn_name, inner.strip(), rtype))
+    return found
+
+
+def _extract_prompt_non_none_returns(prompt: str) -> Dict[str, str]:
+    if not prompt or not prompt.strip():
+        return {}
+    out: Dict[str, str] = {}
+    for fn_name, _inner, rtype in extract_prompt_typed_signatures(prompt):
+        if rtype and rtype.lower() != "none":
+            out[fn_name] = rtype
+    return out
 
 
 def _count_signature_params(sig_inner: str) -> Optional[Tuple[int, int]]:
@@ -162,6 +214,14 @@ def extract_prompt_func_arities(prompt: str) -> Dict[str, Tuple[int, int]]:
         counts = _count_signature_params(inner)
         if counts is not None:
             arities[fn_name] = counts
+    for fn_name, inner, _rtype in extract_prompt_typed_signatures(prompt):
+        if fn_name in _IGNORED_NAMES or fn_name in arities:
+            continue
+        if re.match(r"self\b", inner):
+            continue
+        counts = _count_signature_params(inner)
+        if counts is not None:
+            arities[fn_name] = counts
     return arities
 
 
@@ -177,12 +237,18 @@ def extract_prompt_api_names(prompt: str) -> Tuple[List[str], List[str], List[st
 
     for m in _CLASS_REQ_RE.finditer(folded):
         cls_name = prompt[m.start(1):m.end(1)] if same_len else m.group(1)
+        raw_folded_cls = m.group(1)
+        is_backticked = m.start(1) > 0 and prompt[m.start(1) - 1] == "`"
+        if raw_folded_cls.lower() in _VN_NON_CLASS_WORDS and not is_backticked:
+            continue
+        if not cls_name[0].isupper() and not is_backticked and "_" not in cls_name:
+            continue
         if cls_name not in _IGNORED_NAMES and cls_name not in classes:
             classes.append(cls_name)
 
     for m in _FUNC_REQ_RE.finditer(folded):
         fn_name = prompt[m.start(1):m.end(1)] if same_len else m.group(1)
-        if fn_name not in _IGNORED_NAMES and fn_name not in funcs:
+        if fn_name not in _IGNORED_NAMES and fn_name not in classes and fn_name not in funcs:
             funcs.append(fn_name)
 
     scan_text = prompt if same_len else folded
@@ -190,6 +256,16 @@ def extract_prompt_api_names(prompt: str) -> Tuple[List[str], List[str], List[st
         meth_name = m.group(1)
         if meth_name not in ("__str__", "__repr__") and meth_name not in methods:
             methods.append(meth_name)
+
+    # Also capture bulleted / numbered typed top-level functions like `1. nen_chuoi_rle(s: str) -> str`
+    for fn_name, inner, _rtype in extract_prompt_typed_signatures(prompt):
+        if re.match(r"self\b", inner):
+            if fn_name not in ("__str__", "__repr__") and fn_name not in methods:
+                methods.append(fn_name)
+        elif fn_name not in _IGNORED_NAMES and fn_name not in classes and fn_name not in methods and fn_name not in funcs:
+            # Exclude method signatures listed under a class prompt when `classes` is non-empty and `ham` wasn't mentioned
+            if not classes or "ham" in folded.casefold():
+                funcs.append(fn_name)
 
     return classes, funcs, methods
 

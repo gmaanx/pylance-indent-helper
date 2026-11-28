@@ -1,4 +1,4 @@
 @echo off
 setlocal
-call "%~dp0..\setup_nhanh.bat" %*
+call "%~dp0..\setup.bat" %*
 exit /b %ERRORLEVEL%

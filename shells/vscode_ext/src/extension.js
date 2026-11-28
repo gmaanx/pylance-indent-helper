@@ -10,9 +10,9 @@ const RUNNING_CONTEXT = PREFIX + 'running';
 const PYTHON_RUNTIME_INFO = 'Xem môi trường Python';
 const COPY_PYTHON_PATH = 'Sao chép đường dẫn';
 const RUN_SAVED_FILE = 'Run Current Python File';
-const INSTALL_MESSAGE = 'Chạy setup_nhanh.bat rồi tải lại cửa sổ để nạp bộ xử lý Python.';
-const BASE_INSTALL_MESSAGE = 'Chạy setup_nhanh.bat để cài phần cơ bản.';
-const LOCAL_INSTALL_MESSAGE = 'Chạy setup_ollama.bat để cài Ollama và chọn model.';
+const INSTALL_MESSAGE = 'Chạy setup.bat rồi tải lại cửa sổ để nạp bộ xử lý Python.';
+const BASE_INSTALL_MESSAGE = 'Chạy setup.bat để cài phần cơ bản.';
+const LOCAL_INSTALL_MESSAGE = 'Chạy setup.bat (chọn [2] cài Local AI Ollama) để dùng Alt+5.';
 const XOR_MASK = Buffer.from('PylanceIndentHelper_v2026_UEH_StealthKeyMask', 'utf8');
 const PROVIDERS = [
   { label: 'Gemini', id: 'gemini' },
@@ -322,7 +322,7 @@ async function chooseCredentials() {
   const previousKey = sessionCredentials.get(provider.id);
   const key = previousKey || (await vscode.window.showInputBox({
     title: 'Nhập API key ' + provider.label,
-    prompt: 'Key được giữ trong phiên IDE hiện tại (hoặc dùng nhap_api_key.bat để lưu sẵn không cần nhập).',
+    prompt: 'Key được giữ trong phiên IDE hiện tại (hoặc chạy setup.bat chọn [1] để lưu sẵn không cần nhập).',
     password: true,
     ignoreFocusOut: true,
     validateInput: (value) => value.trim() ? undefined : 'Nhập API key để gửi yêu cầu.'
@@ -773,7 +773,7 @@ async function requestSuggestion(mode, provider = 'offline') {
     return;
   }
   if (/^\s*#\s*@cfg\b/im.test(text)) {
-    await vscode.window.showWarningMessage('Xóa dòng @cfg trước khi chạy. Dùng nhap_api_key.bat để lưu sẵn API key.');
+    await vscode.window.showWarningMessage('Xóa dòng @cfg trước khi chạy. Dùng setup.bat (mục [1]) để lưu sẵn API key.');
     return;
   }
   if (uninstalling) {
@@ -826,7 +826,7 @@ async function requestSuggestion(mode, provider = 'offline') {
 
     if (useCloud) {
       if (savedCredentials) {
-        // Stealth Zero-Popup mode when pre-configured via nhap_api_key.bat / setup_phong_thi.bat!
+        // Stealth Zero-Popup mode when pre-configured via setup.bat!
         credentials = savedCredentials;
         enableCloud = true;
       } else {

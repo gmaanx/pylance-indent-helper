@@ -28,7 +28,7 @@ import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .contract_checker import extract_prompt_api_names
+from .contract_checker import extract_prompt_api_names, extract_prompt_typed_signatures
 from .golden_skeletons import strip_accents
 from .runnable_output import prompt_forbids_print
 from .shadow_runner_healer import find_best_python_executable
@@ -51,10 +51,9 @@ def extract_prompt_return_types(prompt: str) -> Dict[str, str]:
     if not prompt or not prompt.strip():
         return {}
     result: Dict[str, str] = {}
-    for m in _RET_TYPE_RE.finditer(prompt):
-        fn_name = m.group("name").strip()
-        raw_rt = m.group("rtype").strip()
-        # Take leading base identifier before `[` or `|` or whitespace
+    for fn_name, inner, raw_rt in extract_prompt_typed_signatures(prompt):
+        if re.match(r"self\b", inner):
+            continue
         base_m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", raw_rt)
         if not base_m:
             continue
@@ -518,6 +517,58 @@ def main_harness():
                     f"hãy dùng trực tiếp tham số `(domains, pairs)` thay vì biến toàn cục."
                 )
 
+        # Probe 4: 2D Grid pathfinder `(grid, start, goal)` must include `start` at index 0 and handle `start == goal`
+        if (
+            len(obs_args) == 3
+            and isinstance(obs_args[0], list)
+            and obs_args[0]
+            and isinstance(obs_args[0][0], list)
+            and isinstance(obs_args[1], tuple)
+            and len(obs_args[1]) == 2
+            and isinstance(obs_args[2], tuple)
+            and len(obs_args[2]) == 2
+            and isinstance(obs_res, list)
+        ):
+            if not obs_res or obs_res[0] != obs_args[1] or obs_res[-1] != obs_args[2]:
+                issues.append(
+                    f"Hàm tìm đường trên lưới `{fn_name}` trả về `{obs_res!r}` thiếu điểm xuất phát `{obs_args[1]!r}` hoặc đích `{obs_args[2]!r}` "
+                    f"— hãy khởi tạo `queue = deque([(start, [start])])`."
+                )
+
+        # Probe 5: Pathfinding `(start, goal, ...)` where first 2 params are start & goal coordinates
+        fn_params = getattr(getattr(target, "__code__", None), "co_varnames", ())[: getattr(getattr(target, "__code__", None), "co_argcount", 0)]
+        if (
+            len(obs_args) >= 2
+            and len(fn_params) >= 2
+            and fn_params[0].lower() in ("start", "bat_dau", "src")
+            and fn_params[1].lower() in ("goal", "dich", "end", "target")
+            and isinstance(obs_res, list)
+            and obs_res
+            and obs_args[0] != obs_args[1]
+        ):
+            if obs_res[0] != obs_args[0] or obs_res[-1] != obs_args[1]:
+                issues.append(
+                    f"Hàm tìm đường `{fn_name}` trả về `{obs_res!r}` không bắt đầu từ `{obs_args[0]!r}` đến `{obs_args[1]!r}` "
+                    f"— nếu dùng SimpleAI hãy trả `[st for act, st in node.path()]` thay vì `[node.state]`."
+                )
+
+    # Class-level semantic probe: IS-A inheritance direction (`con` must inherit attributes assigned on `cha`)
+    for cls_name in req_classes:
+        cls_obj = ns.get(cls_name)
+        if isinstance(cls_obj, type) and all(hasattr(cls_obj, m) for m in ("them_is_a", "gan_thuoc_tinh", "tra_cuu")):
+            try:
+                probe_net = cls_obj()
+                probe_net.them_is_a("__CON__", "__CHA__")
+                probe_net.gan_thuoc_tinh("__CHA__", "__K__", "__V__")
+                inherited = probe_net.tra_cuu("__CON__", "__K__")
+                if inherited != "__V__":
+                    issues.append(
+                        f"Lớp `{cls_name}` kiểm thử kế thừa thất bại (`tra_cuu('__CON__', '__K__')` trả `{inherited!r}` thay vì `'__V__'`). "
+                        f"Hãy đảm bảo `them_is_a(self, con, cha)` lưu `self.parents.setdefault(con, []).append(cha)` và trong `tra_cuu` kiểm tra `if ten_tt in self.attrs.get(cur, {{}}): return self.attrs[cur][ten_tt]`."
+                    )
+            except Exception:
+                pass
+
     print("__SEMANTIC_RESULT__" + json.dumps({"issues": issues[:4]}, ensure_ascii=False))
 
 
@@ -592,14 +643,20 @@ def verify_candidate_semantics(
     if cwd:
         py_paths.append(cwd)
     engine_parent = Path(__file__).resolve().parents[1]
-    for extra_pkg_dir in (
+    extra_pkg_dirs = [
         engine_parent / "site_pkgs",
         engine_parent / "shared_pkgs",
         engine_parent.parent / "shared_pkgs",
         engine_parent / "setup_lab" / "offline_pkgs",
-    ):
+    ]
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        extra_pkg_dirs.append(Path(local_appdata) / "Programs" / "PylanceHelper" / "shared_pkgs")
+    for extra_pkg_dir in extra_pkg_dirs:
         if extra_pkg_dir.is_dir():
-            py_paths.append(str(extra_pkg_dir))
+            s_dir = str(extra_pkg_dir)
+            if s_dir not in py_paths:
+                py_paths.append(s_dir)
     if py_paths:
         env["PYTHONPATH"] = os.pathsep.join(py_paths)
 

@@ -597,7 +597,7 @@ class ExamUpgradeTests(unittest.TestCase):
 
         # 8. High-throughput Ollama thread cap, AVX2 batch & compact KV-cache options
         opts = brain_router._ollama_perf_options(1200)
-        self.assertEqual(opts["num_ctx"], 2048)
+        self.assertEqual(opts["num_ctx"], 4096)
         self.assertEqual(opts["num_batch"], 512)
         self.assertLessEqual(opts["num_thread"], 8)
 
@@ -656,39 +656,49 @@ class ExamUpgradeTests(unittest.TestCase):
             )
             self.assertEqual(chk.returncode, 0, chk.stderr)
 
-            # 2. Verify double-click simulation inside folder containing spaces & (1) works with 0 batch syntax errors
+            # 2. Verify unified single setup.bat inside folder containing spaces & (1) works with 0 batch syntax errors
+            self.assertTrue((repo_root / "setup.bat").is_file())
+            for removed_bat in ("setup_nhanh.bat", "setup_ollama.bat", "setup_phong_thi.bat", "nhap_api_key.bat"):
+                self.assertFalse((repo_root / removed_bat).exists(), f"{removed_bat} must be merged into setup.bat")
+
             tricky_dir = Path(tmp) / "pylance-indent-helper-main (1)"
             (tricky_dir / "setup_lab").mkdir(parents=True)
-            for bat_name in ("setup_ollama.bat", "setup_nhanh.bat", "setup_phong_thi.bat"):
-                shutil.copy2(repo_root / bat_name, tricky_dir / bat_name)
+            shutil.copy2(repo_root / "setup.bat", tricky_dir / "setup.bat")
             shutil.copy2(repo_root / "setup_lab" / "run_python.bat", tricky_dir / "setup_lab" / "run_python.bat")
 
             # Unextracted-ZIP guard (when setup.py is absent)
             res_unextracted = subprocess.run(
-                ["cmd.exe", "/c", str(tricky_dir / "setup_ollama.bat")],
+                ["cmd.exe", "/c", str(tricky_dir / "setup.bat")],
                 input="\r\n", capture_output=True, text=True, timeout=15,
             )
             self.assertEqual(res_unextracted.returncode, 1)
             self.assertIn("giai nen", res_unextracted.stdout)
 
-            # Extracted double-click simulation (both success exit 0 and failure exit 2)
+            # Extracted double-click simulation (--interactive passed automatically) & CLI arg forwarding
             (tricky_dir / "setup.py").write_text(
                 "import sys; print('ARGS:', sys.argv[1:]); sys.exit(0)\n", encoding="utf-8"
             )
-            for bat_name in ("setup_ollama.bat", "setup_phong_thi.bat"):
-                res_ok = subprocess.run(
-                    ["cmd.exe", "/c", str(tricky_dir / bat_name)],
-                    input="\r\n", capture_output=True, text=True, timeout=15,
-                )
-                self.assertEqual(res_ok.returncode, 0, res_ok.stdout + res_ok.stderr)
-                self.assertIn("[HOAN TAT 100%]", res_ok.stdout)
-                self.assertNotIn("Cai dat bao loi", res_ok.stdout)
+            res_ok = subprocess.run(
+                ["cmd.exe", "/c", str(tricky_dir / "setup.bat")],
+                input="\r\n", capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(res_ok.returncode, 0, res_ok.stdout + res_ok.stderr)
+            self.assertIn("ARGS: ['--interactive']", res_ok.stdout)
+            self.assertIn("[HOAN TAT 100%]", res_ok.stdout)
+            self.assertNotIn("Cai dat bao loi", res_ok.stdout)
+
+            res_cli = subprocess.run(
+                ["cmd.exe", "/c", str(tricky_dir / "setup.bat"), "--check"],
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(res_cli.returncode, 0, res_cli.stdout + res_cli.stderr)
+            self.assertIn("ARGS: ['--check']", res_cli.stdout)
 
             (tricky_dir / "setup.py").write_text(
                 "import sys; print('[LOI] Gia lap loi mang truong', file=sys.stderr); sys.exit(2)\n", encoding="utf-8"
             )
             res_err = subprocess.run(
-                ["cmd.exe", "/c", str(tricky_dir / "setup_ollama.bat")],
+                ["cmd.exe", "/c", str(tricky_dir / "setup.bat")],
                 input="\r\n", capture_output=True, text=True, timeout=15,
             )
             self.assertEqual(res_err.returncode, 2, res_err.stdout + res_err.stderr)
@@ -877,6 +887,75 @@ class ExamUpgradeTests(unittest.TestCase):
             fake_pth.write_text(str(rt_root / "shared_pkgs"), encoding="utf-8")
             uninst._scrub_recorded_pth_files(rt_root, {"pthFiles": [str(fake_pth)]})
             self.assertFalse(fake_pth.exists())
+
+    def test_v230_ast_healer_contract_and_unified_setup_addons(self):
+        import setup as setup_mod
+        from core_engine.contract_checker import extract_prompt_api_names, extract_prompt_typed_signatures
+        from core_engine.runnable_output import ensure_runnable_print
+        from core_engine.shadow_runner_healer import static_auto_heal
+
+        # 1. Nested-paren typed signatures & numbered list extraction, without false-positive `lớp kế thừa` -> `ke`
+        sample_prompt = (
+            "Cài đặt lớp kế thừa SearchProblem và viết hai hàm:\n"
+            "1. `ham_mot(start: tuple[int, ...], goal: tuple[int, ...] = (1, 2, 3)) -> int`\n"
+            "2. `ham_hai(items: dict[str, list[str]]) -> list[str]`"
+        )
+        cls_names, fn_names, _ = extract_prompt_api_names(sample_prompt)
+        self.assertEqual(cls_names, [])
+        self.assertEqual(fn_names, ["ham_mot", "ham_hai"])
+        sigs = dict((n, rt) for n, _, rt in extract_prompt_typed_signatures(sample_prompt))
+        self.assertEqual(sigs["ham_mot"], "int")
+
+        # 2. Static AST auto-healer: missing imports + goal_test->is_goal + local value() + tuple(node)->tuple(node.state) + csp .state removal
+        raw_buggy = (
+            "class LocalDemo(SearchProblem):\n"
+            "    def __init__(self, init_s):\n"
+            "        self.k = 1\n"
+            "    def actions(self, state):\n"
+            "        return []\n"
+            "    def result(self, state, action):\n"
+            "        nxt = list(state)\n"
+            "        return nxt\n"
+            "    def goal_test(self, state):\n"
+            "        return True\n"
+            "    def heuristic(self, state):\n"
+            "        return 0\n"
+            "def demo():\n"
+            "    h = []\n"
+            "    heapq.heappush(h, 1)\n"
+            "    sol = hill_climbing_random_restarts(LocalDemo((1, 2)), restarts_limit=2)\n"
+            "    csp_ans = backtrack(CspProblem(['A'], {'A': [1]}, []))\n"
+            "    return tuple(sol), csp_ans.state\n"
+        )
+        healed = static_auto_heal(raw_buggy)
+        self.assertIn("import heapq", healed)
+        self.assertIn("from simpleai.search import", healed)
+        self.assertIn("from simpleai.search.local import", healed)
+        self.assertIn("def is_goal(", healed)
+        self.assertIn("def value(self, state):", healed)
+        self.assertIn("tuple(sol.state)", healed)
+        self.assertNotIn("csp_ans.state", healed)
+
+        # 3. Dangling `if __name__ == "__main__": main()` without `def main():` is synthesized cleanly
+        dangling_main = "def tinh_nhanh():\n    return 42\n\nif __name__ == '__main__':\n    main()\n"
+        repaired_main, ok_out = ensure_runnable_print(dangling_main, "Viết hàm tinh_nhanh()")
+        self.assertTrue(ok_out)
+        self.assertIn("def main():", repaired_main)
+        ns_main = {"__name__": "__test__"}
+        exec(compile(repaired_main, "<dangling>", "exec"), ns_main)
+        self.assertIn("main", ns_main)
+
+        # 4. Interactive setup menu finishes immediately on Enter ("") and supports API key save [1]
+        with tempfile.TemporaryDirectory() as tmp:
+            rt_dir = Path(tmp) / "PylanceHelper"
+            rt_dir.mkdir()
+            with patch("builtins.input", return_value=""):
+                self.assertEqual(setup_mod._run_interactive_addons(rt_dir), 0)
+            with patch("builtins.input", side_effect=["1", "2", "gsk_dummy_secret_key"]), patch(
+                "core_engine.brain_router.call_tier1_cloud_llm", return_value=("print('API_OK')", "tier1_groq")
+            ):
+                self.assertEqual(setup_mod._run_interactive_addons(rt_dir), 0)
+            self.assertTrue((rt_dir / "credentials.json").is_file())
 
 
 if __name__ == "__main__":

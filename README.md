@@ -13,30 +13,35 @@ Tiện ích Windows hỗ trợ luyện bài Python trong VS Code hoặc Antigrav
 
 1. Tương thích từ **Python 3.8 đến Python 3.13** trên Windows (kể cả máy phòng Lab chạy Python 3.8/3.9 hoặc Anaconda) cùng VS Code hoặc Antigravity. Kiểm tra nhanh bằng `py -3 --version` hoặc `python --version`. [Tải Python cho Windows](https://www.python.org/downloads/windows/)
 2. Giải nén gói cài Windows vào một thư mục có thể ghi, hoặc kéo từ GitHub đầu giờ bằng `git clone https://github.com/gmaanx/pylance-indent-helper.git`. Gói cài đã kèm sẵn trọn bộ wheel offline (`simpleai`, `miniKanren`, `sympy`, `toolz`).
-3. **Cách cài đặt nhanh đầu giờ:**
-   - **Cài trọn gói 1 chạm cho Phòng Thi** (Full thư viện + Extension IDE + tự chọn model Ollama `3B`/`1.5B` theo RAM máy + nạp sẵn API Key mã hóa chạy ngầm không popup):
+3. **Cách cài đặt duy nhất 1 chạm (`setup.bat`):**
+   - Nhấp đúp **[setup.bat](setup.bat)**: trong **~6 giây đầu**, trình cài đặt xong ngay **Bộ giải Offline + trọn bộ thư viện Python (`simpleai`, `miniKanren`, `sympy`) cho toàn bộ Python trên máy + Extension VS Code / Antigravity**.
+   - Ngay sau đó trên cùng cửa sổ sẽ hiện menu tùy chọn 1 phím:
+     - **`Enter` / `0`**: Kết thúc ngay lập tức (0 giây chờ thêm — sẵn sàng dùng `Alt+1`, `Alt+2`, `Alt+4`, `Alt+6` và nút ▶ Run).
+     - **`1`**: Dán & mã hóa sẵn Cloud API Key (`Gemini` / `Groq` / `DeepSeek` / `OpenRouter` / `OpenAI`) để chạy ngầm không hiện popup.
+     - **`2`**: Cài thêm Local AI Ollama siêu gọn (~30 MB CPU runtime + tải đa luồng 8 kênh + nạp sẵn vào RAM cho `Alt+5`).
+     - **`3`**: Cài trọn bộ **cả Cloud API Key + Local AI Ollama** (dự phòng 100%).
+     - **`4`**: Xóa API Key đã lưu trên máy.
+   - Hoặc chạy thẳng bằng lệnh PowerShell không cần hỏi menu:
      ```powershell
-     .\setup_phong_thi.bat --provider gemini --key AIzaSy...
+     .\setup.bat --local --auto-model --provider gemini --key AIzaSy...
      ```
-     *(Nếu không truyền `--provider`/`--key`, script vẫn cài đầy đủ Offline + Extension + Ollama theo RAM).*
-   - Hoặc chỉ cài **Offline + API Cloud** siêu nhanh (< 10 giây, mặc định cài đủ `simpleai` + `miniKanren` + `sympy`): nhấp đúp [setup_nhanh.bat](setup_nhanh.bat).
-4. Khi cài xong, bấm **Ctrl+Shift+P → Reload Window** trong IDE đang mở để nạp extension (`v1.8.0`). Trình cài tự động cài đặt đồng thời cho cả **VS Code** và **Antigravity** (nếu máy có cả hai).
+4. Khi cài xong, bấm **Ctrl+Shift+P → Reload Window** trong IDE đang mở để nạp extension (`v2.3.0`). Trình cài tự động cài đặt đồng thời cho cả **VS Code** và **Antigravity** (nếu máy có cả hai).
 
 ```powershell
-.\setup_nhanh.bat
+.\setup.bat
 ```
 
-Trình cài chọn một IDE có CLI, tạo môi trường Python riêng và chạy thử một bài SimpleAI. Có thể dùng `py -3 setup.py` hoặc `python setup.py` nếu muốn gọi trực tiếp. Các lệnh sau kiểm tra điều kiện hoặc chỉ định IDE.
+Trình cài chọn một IDE có CLI, tạo môi trường Python riêng, gắn thư viện cho toàn bộ Python trên máy và chạy thử một bài SimpleAI. Có thể dùng `py -3 setup.py` hoặc `python setup.py` nếu muốn gọi trực tiếp. Các lệnh sau kiểm tra điều kiện hoặc chỉ định IDE.
 
 ```powershell
-.\setup_nhanh.bat --check
-.\setup_nhanh.bat --ide vscode
-.\setup_nhanh.bat --ide antigravity
+.\setup.bat --check
+.\setup.bat --ide vscode
+.\setup.bat --ide antigravity
 ```
 
-Nếu IDE không có CLI, chạy `.\setup_nhanh.bat --ide manual`. Mở **Extensions → Install from VSIX** trong IDE, chọn file VSIX mà trình cài in ra, rồi tải lại cửa sổ.
+Nếu IDE không có CLI, chạy `.\setup.bat --ide manual`. Mở **Extensions → Install from VSIX** trong IDE, chọn file VSIX mà trình cài in ra, rồi tải lại cửa sổ.
 
-Gói mặc định chỉ kèm SimpleAI. Nếu cần chạy các mẫu cũ có `import kanren` hoặc `import sympy`, tạo gói với `py -3 setup_lab/build_release.py --full` và cài bằng `setup_nhanh.bat --profile full`. Lệnh `py -3 setup_lab/build_release.py` tạo gói mặc định. Cả hai ZIP nằm trong `dist/`.
+Gói đầy đủ kèm sẵn `simpleai`, `miniKanren` và `sympy` (`py -3 setup_lab/build_release.py --full`). Lệnh `py -3 setup_lab/build_release.py` tạo gói gọn chỉ kèm `simpleai`. Cả hai ZIP nằm trong `dist/`.
 
 Khi file cần SimpleAI mà Python đang chọn báo `ModuleNotFoundError`, lưu file rồi bấm **Ctrl+Shift+P** và chọn **Bài tập Python: Chạy file đã lưu bằng Python của công cụ**. Lệnh này chạy bằng môi trường đã cài thư viện và hiện kết quả trong Terminal. Muốn dùng nút Run của Python extension, mở **Bài tập Python: Xem môi trường Python của công cụ**, sao chép đường dẫn và chọn đường dẫn đó bằng **Python: Select Interpreter**.
 
@@ -58,7 +63,7 @@ Nếu file có nhiều đề, chọn từng khối bằng con trỏ hoặc vùng
 | --- | --- |
 | `Alt+1` | Giải nhanh Offline chính xác (`< 0.1s`, 0% mạng) |
 | `Alt+2` | **Auto-Pilot 1 chạm** (Offline → Cloud ngầm → Ollama → Phôi Vàng BM25 + tự chạy ngầm sửa lỗi) |
-| `Alt+3` | Dùng API Cloud (chạy thẳng không popup nếu đã lưu key qua `nhap_api_key.bat`) |
+| `Alt+3` | Dùng API Cloud (chạy thẳng không popup nếu đã lưu key qua `setup.bat` mục `[1]`) |
 | `Alt+4` | **True Self-Fix**: chạy thử bắt `SyntaxError` / `Traceback` thực tế và tự vá code |
 | `Alt+5` | Dùng model Ollama trên máy (kèm Phôi Vàng BM25 + tự chạy ngầm sửa lỗi) |
 | `Alt+6` | Tự lưu & chạy ngay file `.py` / ô `.ipynb` bằng Python của công cụ |
@@ -222,50 +227,49 @@ Cloud dùng tối đa hai lượt gọi cùng nhà cung cấp. Lượt sau rà b
 | OpenRouter | [OpenRouter Keys](https://openrouter.ai/settings/keys) |
 | OpenAI | [OpenAI Platform API Keys](https://platform.openai.com/api-keys) |
 
-Kiểm tra và lưu sẵn API key đã mã hóa (XOR + Base64) từ terminal trước giờ thi để bấm **Alt+2** hoặc **Alt+3** chạy ngầm hoàn toàn không hiện popup:
+Kiểm tra và lưu sẵn API key đã mã hóa (XOR + Base64) qua `setup.bat` (nhấp đúp chọn `[1]` hoặc truyền tham số dòng lệnh) trước giờ thi để bấm **Alt+2** hoặc **Alt+3** chạy ngầm hoàn toàn không hiện popup:
 
 ```powershell
-.\nhap_api_key.bat --provider gemini --key AIzaSy...
+.\setup.bat --provider gemini --key AIzaSy...
 # Xóa key đã lưu bất kỳ lúc nào (hoặc bấm Alt+0 gỡ toàn bộ):
-.\nhap_api_key.bat --clear
+.\setup.bat --clear-key
 ```
 
 Nếu Cloud trả lỗi, kiểm tra mạng, key, quyền truy cập model và giới hạn tài khoản. Có thể đặt ID model tương thích trong `%LOCALAPPDATA%\Programs\PylanceHelper\models.json`, ví dụ `{"gemini_model":"ID_MODEL_CUA_BAN"}`. File này dùng cho tùy chọn model. Nhập key qua ô nhập của IDE hoặc terminal ở trên.
 
 ## Cài và dùng AI cục bộ với Alt+5
 
-Mở PowerShell tại thư mục đã giải nén và chạy:
+Nhấp đúp `setup.bat` và bấm phím `2` (hoặc `3`), hoặc chạy trực tiếp trong PowerShell:
 
 ```powershell
-.\setup_ollama.bat
+.\setup.bat --local --auto-model
 ```
 
-`setup_ollama.bat` có thể chạy riêng. Nó dùng ứng dụng Ollama sẵn có hoặc cài Ollama cho tài khoản hiện tại qua WinGet, rồi tải `qwen2.5-coder:1.5b` nếu cần. Lần tải đầu cần mạng. Model khoảng 986 MB và Ollama cần thêm dung lượng cho ứng dụng. Sau khi tải xong, mở Ollama, tải lại cửa sổ IDE rồi bấm **Alt+5**. [Cài Ollama trên Windows](https://docs.ollama.com/windows) · [Dung lượng model mặc định](https://ollama.com/library/qwen2.5-coder:1.5b)
+`setup.bat` tự động tải bản Ollama CPU siêu gọn (~30 MB thay vì 1.8 GB) và tải đa luồng 8 kênh model phù hợp với RAM máy (`qwen2.5-coder:1.5b` hoặc `3b`), nạp sẵn model vào RAM rồi cấu hình **Alt+5**. Lần tải đầu cần mạng. [Cài Ollama trên Windows](https://docs.ollama.com/windows) · [Dung lượng model mặc định](https://ollama.com/library/qwen2.5-coder:1.5b)
 
-Có thể chọn model khác bằng `.\setup_ollama.bat --local-model TÊN_MODEL`. Nếu thiếu WinGet, cài Ollama từ trang chính thức rồi chạy lại lệnh. **Alt+5** gửi đề tới model chạy trên máy tại `127.0.0.1:11434`, kể cả khi bài có bộ giải offline. Tiện ích kiểm tra cú pháp của mã trả về.
+Có thể chọn model cụ thể bằng `.\setup.bat --local --local-model TÊN_MODEL`. **Alt+5** giải tức thì các bài có đặc tả chính xác và gửi đề tự do tới model chạy trên máy tại `127.0.0.1:11434`.
 
-Dùng `.\setup_ollama.bat --check` để kiểm tra model. Chạy lại `.\setup_ollama.bat` nếu tải model bị gián đoạn.
+Dùng `.\setup.bat --local --check` để kiểm tra model. Chạy lại `.\setup.bat` (chọn `2`) nếu tải model bị gián đoạn.
 
 ## Cập nhật, gỡ và xử lý lỗi
 
-Cập nhật bằng cách chạy lại setup từ bản mới rồi chọn **Reload Window**. Nếu dùng Git, chạy `git pull --ff-only` trước khi chạy setup. Nếu dùng profile đầy đủ, thêm `--profile full` khi nâng cấp. Nếu đã cài ở hai IDE, cập nhật cho từng IDE.
+Cập nhật bằng cách chạy lại `setup.bat` từ bản mới rồi chọn **Reload Window**. Nếu dùng Git, chạy `git pull --ff-only` trước khi chạy `setup.bat`.
 
-| Thành phần | Cài đặt | Gỡ toàn bộ hệ thống (Terminal) | Gỡ ngầm 1 chạm |
+| Thao tác | Nút bấm duy nhất | Gỡ toàn bộ hệ thống (Terminal) | Gỡ ngầm 1 chạm |
 | --- | --- | --- | --- |
-| Offline + API | [setup_nhanh.bat](setup_nhanh.bat) | [go_cai_dat.bat](go_cai_dat.bat) | [go_cai_dat.vbs](go_cai_dat.vbs) |
-| Trọn bộ + Ollama | [setup_ollama.bat](setup_ollama.bat) | [go_cai_dat.bat](go_cai_dat.bat) | [go_cai_dat.vbs](go_cai_dat.vbs) |
+| Cài đặt (Offline / API Key / Ollama) | [setup.bat](setup.bat) | [go_cai_dat.bat](go_cai_dat.bat) | [go_cai_dat.vbs](go_cai_dat.vbs) |
 
 File `.vbs` chạy lệnh gỡ ở nền khi nhấp đúp. **Alt+0** (và `go_cai_dat.bat`) thực hiện **xóa sạch dấu vết 100% toàn bộ hệ thống trong 1 lệnh duy nhất**: gỡ toàn bộ `Alt+1` đến `Alt+6`, xóa Extension khỏi cả VS Code và Antigravity, dừng toàn bộ tiến trình Ollama, xóa triệt để `Programs\Ollama`, `%LOCALAPPDATA%\Ollama`, `~/.ollama`, `~/.pylance-helper`, `PylanceHelper`, `PylanceHelperLocalAI`, `PylanceHelperLogs`, `credentials.json`, shortcut Desktop/Start Menu/Startup cùng khóa Registry `Run`/`Path`/`Uninstall`, sau đó **tự động `Reload Window`** để xóa sạch phím tắt khỏi bộ nhớ IDE ngay lập tức.
 
 | Hiện tượng | Cách xử lý |
 | --- | --- |
 | `python` không được nhận diện | Kiểm tra `py -3 --version` hoặc `python --version`. Nếu chưa có Python phù hợp, cài Python 3.10 trở lên và mở lại terminal. |
-| Trình cài không thấy IDE | Chạy `.\setup_nhanh.bat --check`. Nếu IDE thiếu CLI, cài theo chế độ `--ide manual`. |
+| Trình cài không thấy IDE | Chạy `.\setup.bat --check`. Nếu IDE thiếu CLI, cài theo chế độ `--ide manual`. |
 | Phím tắt không phản hồi | Mở file `.py`, tải lại cửa sổ và thử lệnh qua **Ctrl+Shift+P**. Kiểm tra **Keyboard Shortcuts** nếu phím bị trùng. |
 | `SyntaxError` xuất hiện ở dòng đề bài | Đặt đề trong dấu ba nháy hoặc sau dấu `#`. Dùng phím của công cụ để tạo đề xuất. |
-| `ModuleNotFoundError: No module named 'simpleai'` | Lưu file và chọn **Chạy file đã lưu bằng Python của công cụ**. Với `kanren` hoặc `sympy`, dùng gói đầy đủ và profile `full`. |
+| `ModuleNotFoundError: No module named 'simpleai'` | Chạy lại `setup.bat` để tự gắn thư viện cho toàn bộ Python trên máy, hoặc bấm `Alt+6`. |
 | Offline báo thiếu dữ liệu hoặc ngoài phạm vi | Đối chiếu kiểu `@solve`, dữ liệu và ràng buộc hoặc thử **Alt+5** hay **Alt+3** cho câu hỏi tự do. |
-| API báo `401`, `403` hoặc `429` | Kiểm tra key, quyền truy cập model hoặc hạn mức của hãng. Dùng lệnh **Quên API key phiên này** để nhập key mới. |
-| Ollama không kết nối được hoặc thiếu model | Mở Ollama, kiểm tra `.\setup_ollama.bat --check` hoặc chạy lại bộ cài để tải model. |
+| API báo `401`, `403` hoặc `429` | Kiểm tra key, quyền truy cập model hoặc hạn mức của hãng. Dùng lệnh **Quên API key phiên này** hoặc `.\setup.bat --clear-key`. |
+| Ollama không kết nối được hoặc thiếu model | Mở Ollama, kiểm tra `.\setup.bat --local --check` hoặc chạy lại `setup.bat` chọn `[2]`. |
 
 Xem [mã bộ xử lý](core_engine), [extension](shells/vscode_ext) và [kiểm thử](tests).

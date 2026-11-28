@@ -9,7 +9,7 @@ from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .config_manager import CONFIG
-from .contract_checker import check_api_contract, extract_prompt_api_names
+from .contract_checker import check_api_contract, extract_prompt_api_names, extract_prompt_typed_signatures
 from .golden_skeletons import RETRIEVER, SIMPLEAI_STRICT_RULES, strip_accents
 from .runnable_output import ensure_runnable_print, has_meaningful_runnable_main, prompt_forbids_print
 from .workspace_context import is_starter_template
@@ -104,15 +104,15 @@ def select_relevant_skeletons(
     if not query or not query.strip():
         return []
     folded = strip_accents(query).casefold()
-    needs_ai_lib = _needs_ai_library_rules(query) or any(
-        kw in folded for kw in ("ontology", "tbox", "abox", "mang ngu nghia", "mang bayes", "enumeration_ask")
-    )
+    needs_ai_lib = _needs_ai_library_rules(query)
     req_classes, req_funcs, _ = extract_prompt_api_names(query)
 
-    # CRITICAL: If the prompt prescribes custom pure-Python functions/classes (without SimpleAI/Kanren),
-    # DO NOT inject full Golden Skeletons into LLMs (especially small 1.5B/3B Ollama models),
-    # unless a skeleton actually defines those exact requested symbol names!
-    if (req_classes or req_funcs) and not needs_ai_lib:
+    # CRITICAL: If the prompt prescribes custom functions/classes:
+    # - For pure-Python prompts (not needs_ai_lib), NEVER inject mismatched skeletons!
+    # - For small local models (1.5B/3B), even when using SimpleAI/Kanren, NEVER inject a 60-line
+    #   global-variable demo skeleton if it doesn't define the requested API names (we inject an exact
+    #   library API cheat-sheet instead so 1.5B never copy-pastes unrelated globals like GOAL/CAM/Nixon!).
+    if (req_classes or req_funcs) and (not needs_ai_lib or for_local_model):
         candidates = RETRIEVER.retrieve(query, top_k=max(8, top_k * 3))
         matching = []
         for item in candidates:
@@ -141,36 +141,148 @@ def select_relevant_skeletons(
     return [item for item in candidates if item.get("score", 0.0) >= min_score]
 
 
+def _ai_library_api_cheatsheet(text: str) -> str:
+    """Concise, hallucination-free SimpleAI / Kanren API reference without distracting global demo variables."""
+    folded = strip_accents(text).casefold()
+    blocks: List[str] = []
+    if "kanren" in folded or "minikanren" in folded:
+        blocks.append(
+            "API CHUẨN `kanren` (TUYỆT ĐỐI KHÔNG viết `def cha_me(...):` cho vị từ dữ liệu; vị từ PHẢI là đối tượng `Relation()`!):\n"
+            "from kanren import Relation, facts, run, var, lall\n"
+            "cha_me = Relation()  # BẮT BUỘC khởi tạo đối tượng Relation, KHÔNG định nghĩa hàm trùng tên!\n"
+            "facts(cha_me, ('A', 'B'), ('B', 'C'))\n"
+            "# Truy vấn trong hàm: x, y = var(), var(); return sorted(set(run(0, x, lall(cha_me(ong_ba, y), cha_me(y, x)))))"
+        )
+    if "simpleai" in folded or any(k in folded for k in ("searchproblem", "cspproblem", "hill_climbing_random_restarts")):
+        if "cspproblem" in folded or "backtrack" in folded or ("csp" in folded and "searchproblem" not in folded):
+            blocks.append(
+                "API CHUẨN `simpleai` CSP (TUYỆT ĐỐI KHÔNG import `simpleai.search.constraints` vì KHÔNG tồn tại!):\n"
+                "from simpleai.search import CspProblem, backtrack, MOST_CONSTRAINED_VARIABLE, HIGHEST_DEGREE_VARIABLE, LEAST_CONSTRAINING_VALUE, min_conflicts\n"
+                "# Hàm điều kiện nhận `(variables, values)` trong đó `values` là TUPLE các giá trị số/chuỗi theo chỉ số `0, 1, 2...` (ví dụ 3 biến: `def cond(variables, values): return len(set(values)) == 3 and values[0] < values[1] and sum(values) == tong_muc_tieu`).\n"
+                "# Danh sách ràng buộc: `constraints = [(('X', 'Y', 'Z'), cond)]` hoặc `[((u, v), lambda vars, vals: vals[0] != vals[1]) for u, v in edges]`.\n"
+                "# Giải: `ket_qua = backtrack(CspProblem(list(domains.keys()), domains, constraints))` -> `ket_qua` ĐÃ LÀ `dict` (hoặc `None`), `return dict(ket_qua) if ket_qua is not None else None` (KHÔNG có `.state`!)."
+            )
+        if any(k in folded for k in ("hill_climbing", "simulated_annealing", "genetic", "local")):
+            blocks.append(
+                "API CHUẨN `simpleai.search.local`:\n"
+                "from simpleai.search import SearchProblem\n"
+                "from simpleai.search.local import hill_climbing, hill_climbing_random_restarts, simulated_annealing, beam, genetic\n"
+                "# Lớp kế thừa `SearchProblem` cần:\n"
+                "#   actions(self, state), result(self, state, action) -> tuple, value(self, state) -> float (CỰC ĐẠI HÓA `-dem_xung_dot(state)`),\n"
+                "#   generate_random_state(self) -> `tuple(random.randrange(n) for _ in range(n))` (KHÔNG trả hằng số cố định!).\n"
+                "# Chú ý cực kỳ quan trọng: `ket_qua = hill_climbing_random_restarts(problem, restarts_limit=50)` trả về đối tượng `SearchNode` -> "
+                "phải lấy trạng thái qua `ket_qua.state` (ví dụ `return tuple(ket_qua.state)`, TUYỆT ĐỐI KHÔNG viết `tuple(ket_qua)`! Nếu đề cần 0 xung đột, lặp vài lần tới khi `dem_xung_dot(ket_qua.state) == 0`)."
+            )
+        if "searchproblem" in folded or any(k in folded for k in ("astar", "breadth_first", "depth_first", "uniform_cost", "greedy")):
+            if not any(k in folded for k in ("hill_climbing", "simulated_annealing", "genetic")):
+                extra_sp_lines: List[str] = []
+                if "puzzle" in folded:
+                    extra_sp_lines.append(
+                        "# - Với 8-puzzle (tuple 9 số): trong `actions` dùng `idx = state.index(0); r, c = divmod(idx, 3)` trả danh sách chỉ số đích `nr * 3 + nc` hợp lệ; "
+                        "trong `result` dùng `idx = state.index(0); s = list(state); s[idx], s[action] = s[action], s[idx]; return tuple(s)`; "
+                        "Manhattan: `sum(abs(i // 3 - self.goal.index(v) // 3) + abs(i % 3 - self.goal.index(v) % 3) for i, v in enumerate(state) if v != 0)`."
+                    )
+                if "quan ma" in folded or "quan_ma" in folded or "knight" in folded:
+                    extra_sp_lines.append(
+                        "# - Với Quân Mã 8 hướng `MOVES = [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]`: `actions(self, state)` trả `[(r+dr, c+dc) for dr, dc in MOVES if 0 <= r+dr < 8 and 0 <= c+dc < 8 and (r+dr, c+dc) not in self.cam]`; `result(self, state, action)` trả `action`; "
+                        "hàm giải gọi `node = breadth_first(problem, graph_search=True)` và trả `None if node is None else [st for act, st in node.path()]`."
+                    )
+                extra_txt = ("\n" + "\n".join(extra_sp_lines)) if extra_sp_lines else ""
+                blocks.append(
+                    "API CHUẨN `simpleai.search` (TUYỆT ĐỐI KHÔNG import `simpleai.search.heuristics` và KHÔNG đặt tên `goal_test`!):\n"
+                    "from simpleai.search import SearchProblem, breadth_first, depth_first, uniform_cost, greedy, astar\n"
+                    "# Lớp kế thừa `SearchProblem`: trong `__init__(self, start, goal, ...)`: gọi `super().__init__(start)` và lưu `self.goal = goal`.\n"
+                    "# Phương thức: `actions(self, state)`, `result(self, state, action) -> tuple`, `is_goal(self, state) -> bool`, `cost(self, state, action, state2) -> 1`, `heuristic(self, state) -> float`."
+                    + extra_txt + "\n"
+                    "# - BẮT BUỘC: Nếu đề yêu cầu viết hàm giải (vd `def giai_...(start, goal=...)`), PHẢI định nghĩa hàm đó ở mức module bên ngoài class, bên trong hàm khởi tạo Problem, chạy `node = astar(problem, graph_search=True)` và `return int(node.cost)` (hoặc danh sách trạng thái theo đề), rồi `main()` gọi hàm đó!"
+                )
+    return "\n\n".join(blocks)
+
+
 def _pure_python_domain_hints(user_prompt: str) -> str:
     folded = strip_accents(user_prompt).casefold()
     hints: List[str] = []
-    if ("bfs(" in folded or "dfs(" in folded) and "dict" in folded and "simpleai" not in folded:
+    if ("grid" in folded or "luoi" in folded or "me cung" in folded) and ("bfs" in folded or "tim_duong" in folded) and "simpleai" not in folded:
         hints.append(
-            "- BFS/DFS trên đồ thị `dict`: lưu `(dinh_hien_tai, duong_di)` với `duong_di` khởi tạo `[start]`. "
-            "BFS dùng `collections.deque` (`popleft()`), DFS dùng `list` (`pop()`), kiểm tra `visited` chống chu trình, "
-            "trả về `list` đường đi `[start, ..., goal]` khi tới `goal`, hoặc `None` nếu không tới được."
+            "- BFS đường đi ngắn nhất trên lưới 2D `grid`: kiểm tra `if not grid or grid[start[0]][start[1]] == 1 or grid[goal[0]][goal[1]] == 1: return None`; "
+            "khởi tạo `queue = deque([start]); parent = {start: None}`; trong `while queue:`: lấy `r, c = queue.popleft()`, nếu `(r, c) == goal`: viết đủ vòng lặp truy vết `cur = goal; path = []; while cur is not None: path.append(cur); cur = parent[cur]; return path[::-1]`; "
+            "với 4 hướng `(nr, nc)` đi được chưa có trong `parent`: `parent[(nr, nc)] = (r, c); queue.append((nr, nc))`."
+        )
+    elif ("bfs" in folded or "dfs" in folded) and "dict" in folded and "simpleai" not in folded:
+        hints.append(
+            "- BFS/DFS tìm đường trên `dict`: kiểm tra `if start == goal: return [start]`; khởi tạo `queue = deque([(start, [start])])` và `visited = {start}`; lấy `cur, path = queue.popleft()` và trả `[start, ..., goal]` hoặc `None`."
         )
     if "cosine" in folded or ("chuan" in folded and "chia cho 0" in folded):
         hints.append(
             "- Độ tương đồng Cosine: tính `norm1 = math.sqrt(sum(x*x for x in v1))` và `norm2 = math.sqrt(sum(y*y for y in v2))`; "
             "BẮT BUỘC kiểm tra `if norm1 == 0 or norm2 == 0: return 0.0` (dùng `or`, KHÔNG dùng `and`) trước khi chia."
         )
-    if "suy_dien" in folded or ("facts" in folded and ("->" in user_prompt or "rightarrow" in folded)):
+    if "yen_ngua" in folded or ("nho nhat tren hang" in folded and "lon nhat tren cot" in folded):
         hints.append(
-            "- Suy diễn tiến (Modus Ponens) trên `facts: dict`: khởi tạo `kq = dict(facts)` và gán mặc định `False` cho các biến kết luận chưa có; "
-            "lặp suy diễn: với mỗi quy tắc `A and B -> Q`, nếu các tiền đề đều `True` (`kq.get('A', False) and ...`) thì `kq['Q'] = True` "
-            "(TUYỆT ĐỐI KHÔNG truy cập `facts['S']` cho biến chưa có trong `facts`, và KHÔNG viết `a, b = dict_kq` vì sẽ lấy nhầm tên khóa thay vì giá trị bool)."
+            "- Điểm yên ngựa trên ma trận `m x n`: kiểm tra `if not matrix or not matrix[0]: return []`; tính `row_mins = [min(row) for row in matrix]` (1 số mỗi hàng) "
+            "và `col_maxs = [max(matrix[r][c] for r in range(len(matrix))) for c in range(len(matrix[0]))]` (1 số mỗi cột), rồi lấy `[(r, c) for r in range(len(matrix)) for c in range(len(matrix[0])) if matrix[r][c] == row_mins[r] and matrix[r][c] == col_maxs[c]]`."
         )
+    if "rle" in folded or "run-length" in folded or ("nen_chuoi" in folded and "giai_nen" in folded):
+        hints.append(
+            "- Run-Length Encoding gồm 2 hàm KHÁC NHAU:\n"
+            "  + Hàm NÉN (`nen_chuoi_rle(s)`): đếm ký tự giống nhau liên tiếp `i = 0; out = []; while i < len(s): j = i; while j < len(s) and s[j] == s[i]: j += 1; out.append(f'{s[i]}{j - i}'); i = j; return ''.join(out)`.\n"
+            "  + Hàm GIẢI NÉN (`giai_nen_rle(encoded)`): tách chữ cái rồi gom chữ số `i = 0; out = []; while i < len(encoded): ch = encoded[i]; i += 1; num = ''; while i < len(encoded) and encoded[i].isdigit(): num += encoded[i]; i += 1; out.append(ch * (int(num) if num else 1)); return ''.join(out)`."
+        )
+    if ("hangdoiuutien" in folded or "uu tien" in folded or "muc_cap_cuu" in folded) and "fifo" in folded:
+        hints.append(
+            "- Hàng đợi ưu tiên lớn nhất + FIFO bằng `import heapq`: vì `heapq` là min-heap nên khởi tạo `self._heap = []; self._seq = 0`; "
+            "khi thêm đẩy `heapq.heappush(self._heap, (-muc_cap_cuu, self._seq, ten)); self._seq += 1`; khi lấy ra `return heapq.heappop(self._heap)[2]` (hoặc `None` nếu rỗng)."
+        )
+    if "suy_dien" in folded or ("facts" in folded and ("->" in user_prompt or "rightarrow" in folded or "horn" in folded)):
+        if "set[" in folded or "tap tat ca" in folded or "tap ket qua" in folded:
+            hints.append(
+                "- Suy diễn tiến trả về `set[str]`: khởi tạo `known = {k for k, v in facts.items() if v}`; lặp với cờ `changed = True`: "
+                "`while changed: changed = False; for tien_de, ket_luan in rules: if ket_luan not in known and all(p in known for p in tien_de): known.add(ket_luan); changed = True`; cuối cùng `return known` (TUYỆT ĐỐI KHÔNG dùng `while True` thiếu cờ `changed`)."
+            )
+        else:
+            hints.append(
+                "- Suy diễn tiến (Modus Ponens) trên `facts: dict`: khởi tạo `kq = dict(facts)` và gán mặc định `False` cho các biến kết luận chưa có; "
+                "lặp suy diễn với cờ `changed`: với mỗi quy tắc `A and B -> Q`, nếu các tiền đề đều `True` (`kq.get('A', False) and ...`) thì `kq['Q'] = True`."
+            )
     if "menh de tuyen" in folded or "clauses" in folded or "rang_buoc_vi_pham" in folded:
         hints.append(
             "- Đếm mệnh đề tuyển (OR clause) vi phạm: mỗi `clause` được thỏa mãn nếu `any(assignment.get(bien) == gia_tri_dung for bien, gia_tri_dung in clause)`; "
             "nếu `not thoa_man` thì tăng biến đếm vi phạm lên 1."
         )
+    if "is_a" in folded or "mangngunghia" in folded or ("ke thua" in folded and "ghi de" in folded):
+        hints.append(
+            "- Mạng ngữ nghĩa kế thừa `is_a`: khởi tạo `self.parents = {}` và `self.attrs = {}`; "
+            "`them_is_a`: `self.parents.setdefault(con, []).append(cha)`; "
+            "`gan_thuoc_tinh`: `self.attrs.setdefault(khainiem, {})[ten_tt] = gia_tri`; "
+            "`tra_cuu`: duyệt `queue = deque([khainiem]); visited = {khainiem}`, mỗi bước `cur = queue.popleft(); if ten_tt in self.attrs.get(cur, {}): return self.attrs[cur][ten_tt]`, rồi đẩy `for cha in self.parents.get(cur, []):` nếu chưa có trong `visited`."
+        )
+    if "balo" in folded or "knapsack" in folded or "cai tui" in folded:
+        hints.append(
+            "- Quy hoạch động cái túi 0/1 (`0/1 Knapsack`): bảng `dp` kích thước `(n + 1) x (capacity + 1)`; khi truy vết ngược `i` từ `n` về `1`, nếu `dp[i][w] != dp[i - 1][w]` thì chỉ số món được chọn theo hệ 0-based là `i - 1` (`chosen.append(i - 1)`; `w -= weights[i - 1]`), cuối cùng đảo ngược `chosen.reverse()`."
+        )
+    if "bayes" in folded and "priors" in folded and "likelihoods" in folded:
+        hints.append(
+            "- Cập nhật Bayes trên `dict`: tính `numer = {h: priors[h] * likelihoods.get(h, 0.0) for h in priors}` và `p_e = sum(numer.values())` (KHÔNG lấy `sum(likelihoods.values())`!); "
+            "nếu `p_e == 0`: trả `{h: 0.0 for h in priors}`, ngược lại trả `{h: numer[h] / p_e for h in priors}`."
+        )
+    if "hau" in folded or "queen" in folded:
+        hints.append(
+            "- Bài toán N-Queens (mỗi cột `i` đặt hậu ở hàng `state[i]`): hai quân hậu `i < j` ăn nhau khi `state[i] == state[j] or abs(state[i] - state[j]) == j - i`. "
+            "Trong `SearchProblem` tìm kiếm cục bộ: viết chính xác `def actions(self, state): return [(c, r) for c in range(len(state)) for r in range(len(state)) if r != state[c]]` "
+            "và `def result(self, state, action): c, r = action; s = list(state); s[c] = r; return tuple(s)`; "
+            "trong hàm giải viết `ket_qua = None; for _ in range(15): ket_qua = hill_climbing_random_restarts(problem, restarts_limit=50); if dem_xung_dot(ket_qua.state) == 0: break; return tuple(ket_qua.state)`."
+        )
+    if "knn" in folded or "k-nearest" in folded or "lang gieng" in folded:
+        hints.append(
+            "- Phân lớp K-NN: tính `dists = [(math.sqrt(sum((a - b) ** 2 for a, b in zip(x, x_query))), idx, y) for idx, (x, y) in enumerate(zip(train_x, train_y))]`, "
+            "`k_near = sorted(dists)[:k]`, đếm phiếu `votes = Counter(y for _, _, y in k_near)` và từ điển tổng khoảng cách `sum_d = {lb: sum(d for d, _, y in k_near if y == lb) for lb in votes}` (phải là `dict`, KHÔNG phải `list`!), "
+            "chọn `max(votes, key=lambda lb: (votes[lb], -sum_d[lb]))`."
+        )
     return "LƯU Ý THUẬT TOÁN & XỬ LÝ BIÊN BẮT BUỘC:\n" + "\n".join(hints) if hints else ""
 
 
-def _compact_skeleton_for_local(code: str, max_lines: int = 54) -> str:
-    """Strip docstrings and full-line comments from a Golden Skeleton so CPU Ollama prefills 3x faster."""
+def _compact_skeleton_for_local(code: str, max_lines: int = 35) -> str:
+    """Strip docstrings and comments from a Golden Skeleton WITHOUT ever slicing mid-class or dropping helpers."""
     import ast as _ast
 
     cleaned_src = code
@@ -189,17 +301,27 @@ def _compact_skeleton_for_local(code: str, max_lines: int = 54) -> str:
                         if not node.body:
                             node.body.append(_ast.Pass())
             cleaned_src = _ast.unparse(tree)
+            # Only if still long, drop top-level `if __name__ == "__main__":` block cleanly at AST boundary
+            if len(cleaned_src.splitlines()) > max_lines:
+                trimmed_body = [
+                    stmt for stmt in tree.body
+                    if not (
+                        isinstance(stmt, _ast.If)
+                        and isinstance(stmt.test, _ast.Compare)
+                        and isinstance(stmt.test.left, _ast.Name)
+                        and stmt.test.left.id == "__name__"
+                    )
+                ]
+                if trimmed_body:
+                    tree.body = trimmed_body
+                    cleaned_src = _ast.unparse(tree)
         except Exception:
             cleaned_src = code
 
-    lines: List[str] = []
-    for raw_ln in cleaned_src.splitlines():
-        stripped = raw_ln.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        lines.append(raw_ln)
-        if len(lines) >= max_lines:
-            break
+    lines = [
+        raw_ln for raw_ln in cleaned_src.splitlines()
+        if raw_ln.strip() and not raw_ln.strip().startswith("#")
+    ]
     return "\n".join(lines)
 
 
@@ -216,10 +338,11 @@ def _ollama_perf_options(total_chars: int) -> Dict[str, Any]:
         safe_threads = 3
     else:
         safe_threads = max(1, logical_cpus)
-    num_ctx = 2048 if total_chars < 3600 else 4096
-    num_predict = 1024 if total_chars < 2800 else 1536
+    num_ctx = 4096
+    num_predict = 1280 if total_chars < 3200 else 1536
     return {
-        "temperature": 0.05,
+        "temperature": 0.0,
+        "repeat_penalty": 1.08,
         "num_ctx": num_ctx,
         "num_batch": 512,
         "num_predict": num_predict,
@@ -236,7 +359,31 @@ def build_context_injected_prompt(
     workspace_context: str = "",
     for_local: bool = False,
 ) -> Tuple[str, str]:
-    if for_local:
+    req_cls, req_fns, _ = extract_prompt_api_names(user_prompt)
+    typed_sigs = {fn: f"def {fn}({inner}) -> {rt}:" for fn, inner, rt in extract_prompt_typed_signatures(user_prompt)}
+    must_items = [
+        *(f"class {c}:" for c in req_cls),
+        *(typed_sigs.get(f, f"def {f}(...):") for f in req_fns),
+    ]
+
+    if for_local and error_traceback.strip():
+        repair_sections = [
+            "Bạn là trình sửa lỗi Python chính xác 100%. Chỉ xuất TOÀN BỘ file Python đã sửa trong ```python ... ```, KHÔNG giải thích, KHÔNG viết comment.\n"
+            "Đọc kỹ `Chi tiết lỗi cần sửa ngay` để sửa đúng dòng bị lỗi, khai báo mọi biến/hàm thiếu, kiểm tra số phần tử khi unpack tuple và giữ nguyên `if __name__ == \"__main__\":\\n    main()`."
+        ]
+        if must_items:
+            repair_sections.append(
+                "BẮT BUỘC PHẢI ĐỊNH NGHĨA ĐẦY ĐỦ TẤT CẢ CÁC LỚP VÀ HÀM ĐỘC LẬP SAU Ở MỨC MODULE (NGOÀI `main()`):\n"
+                + "\n".join(must_items)
+            )
+        domain_hints = _pure_python_domain_hints(user_prompt)
+        if domain_hints:
+            repair_sections.append(domain_hints)
+        lib_cheatsheet = _ai_library_api_cheatsheet(f"{user_prompt}\n{existing_code}")
+        if lib_cheatsheet:
+            repair_sections.append(lib_cheatsheet)
+        system_prompt = "\n\n".join(repair_sections)
+    elif for_local:
         io_line = (
             "Đọc dữ liệu stdin theo đề và chỉ print kết quả theo đúng định dạng yêu cầu."
             if _prompt_requests_stdin(user_prompt)
@@ -245,26 +392,39 @@ def build_context_injected_prompt(
         sections = [
             "Chuyên gia giải thuật Python 10/10. Chỉ xuất mã Python thuần trong ```python ... ```, KHÔNG giải thích, KHÔNG viết comment để sinh mã nhanh nhất.\n"
             "QUY TẮC BẮT BUỘC:\n"
-            "1. Đúng 100% tên lớp/hàm, thứ tự tham số, kiểu trả về (`-> int` không trả `bool`; tìm đường trả `[start, ..., goal]` hoặc `None` nếu vô nghiệm; mọi hàm có kiểu trả về BẮT BUỘC có lệnh `return ket_qua`).\n"
-            "2. BẮT BUỘC dùng trực tiếp tất cả tham số truyền vào hàm (TUYỆT ĐỐI KHÔNG dùng biến toàn cục của mẫu tham khảo như `VARIABLES`, `XUNG_DOT`, `GRAPH`); không sửa trực tiếp `dict`/`list` đầu vào; dùng `graph.get(u, [])`; kiểm tra mẫu số 0 (`norm1 == 0 or norm2 == 0 -> 0.0`); `heapq` kèm `next(counter)`.\n"
+            "1. Import đầy đủ thư viện dùng trong bài (`import math`, `import heapq`, `from collections import deque, Counter`, ...). Đúng 100% tên lớp/hàm, thứ tự tham số, kiểu trả về (`-> int` không trả `bool`; tìm đường trả `[start, ..., goal]` hoặc `None` nếu vô nghiệm; mọi hàm có kiểu trả về BẮT BUỘC có lệnh `return ket_qua`).\n"
+            "2. BẮT BUỘC dùng trực tiếp tất cả tham số truyền vào hàm (TUYỆT ĐỐI KHÔNG dùng biến toàn cục ngoài hàm); không sửa trực tiếp `dict`/`list` đầu vào trừ khi đề yêu cầu; dùng `graph.get(u, [])`; kiểm tra mẫu số 0 trước khi chia.\n"
             f"3. {io_line} Trong `main()` BẮT BUỘC gọi trực tiếp các hàm/lớp vừa định nghĩa. Kết thúc bằng:\n"
             'if __name__ == "__main__":\n'
             "    main()"
         ]
+        if must_items:
+            sections.append(
+                "BẮT BUỘC PHẢI VIẾT ĐẦY ĐỦ TẤT CẢ CÁC LỚP VÀ HÀM ĐỘC LẬP SAU Ở MỨC MODULE (NGOÀI `main()`, KHÔNG ĐƯỢC BỎ SÓT HÀM NÀO):\n"
+                + "\n".join(must_items)
+            )
         domain_hints = _pure_python_domain_hints(user_prompt)
         if domain_hints:
             sections.append(domain_hints)
         if existing_code.strip() and is_starter_template(existing_code) and not error_traceback.strip():
             sections.append("Giữ nguyên 100% chữ ký hàm/lớp của khung mã và hoàn thiện mọi `# TODO` / `pass` / `NotImplementedError`.")
-        if top_skeletons or _needs_ai_library_rules(f"{user_prompt}\n{existing_code}"):
+        if top_skeletons and not error_traceback.strip():
             sections.append(
                 "SimpleAI bắt buộc: `state` là `tuple` (không dùng `list`); `SearchProblem.__init__` gọi `super().__init__(initial_state)`; "
                 "`bfs/dfs/astar(..., graph_search=True)`; hàm ràng buộc CSP có dạng `def cond(variables, values):`."
             )
-        if top_skeletons and not error_traceback.strip():
             item = top_skeletons[0]
             compact_code = _compact_skeleton_for_local(item["code"])
             sections.append(f"Mẫu cú pháp ({item['title']} — chỉ tham khảo cú pháp API, giữ đúng tên/dữ liệu của đề):\n{compact_code}")
+        else:
+            lib_cheatsheet = _ai_library_api_cheatsheet(f"{user_prompt}\n{existing_code}")
+            if lib_cheatsheet:
+                sections.append(lib_cheatsheet)
+            elif _needs_ai_library_rules(f"{user_prompt}\n{existing_code}"):
+                sections.append(
+                    "SimpleAI bắt buộc: `state` là `tuple` (không dùng `list`); `SearchProblem.__init__` gọi `super().__init__(initial_state)`; "
+                    "`bfs/dfs/astar(..., graph_search=True)`; hàm ràng buộc CSP có dạng `def cond(variables, values):`."
+                )
         if workspace_context and workspace_context.strip():
             sections.append(workspace_context.strip()[:1200])
         system_prompt = "\n\n".join(sections)
@@ -281,6 +441,17 @@ def build_context_injected_prompt(
             "4. Khi dùng `heapq` cho UCS / Greedy / A*, luôn kèm `counter = itertools.count()` ở phần tử thứ 2 `(priority, next(counter), state, ...)`.\n"
             "5. Cài đặt đầy đủ mọi hàm/phương thức (không để `pass` / `TODO`), trong `main()` dùng ví dụ có nghiệm hợp lệ để in kết quả thực tế, tương thích Python 3.8+."
         ]
+        req_cls, req_fns, req_meths = extract_prompt_api_names(user_prompt)
+        typed_sigs = {fn: f"def {fn}({inner}) -> {rt}:" for fn, inner, rt in extract_prompt_typed_signatures(user_prompt)}
+        if req_cls or req_fns:
+            must_items = [
+                *(f"class {c}:" for c in req_cls),
+                *(typed_sigs.get(f, f"def {f}(...):") for f in req_fns),
+            ]
+            sections.append(
+                "BẮT BUỘC PHẢI VIẾT ĐẦY ĐỦ TẤT CẢ CÁC LỚP VÀ HÀM ĐỘC LẬP SAU Ở MỨC MODULE (NGOÀI `main()`, KHÔNG ĐƯỢC BỎ SÓT HÀM NÀO):\n"
+                + "\n".join(must_items)
+            )
         domain_hints = _pure_python_domain_hints(user_prompt)
         if domain_hints:
             sections.append(domain_hints)
@@ -304,15 +475,39 @@ def build_context_injected_prompt(
         system_prompt = "\n\n".join(sections)
 
     parts = [f"Yêu cầu:\n{user_prompt}"]
+    missing_api_repair = "Thiếu hàm bắt buộc" in error_traceback or "Thiếu lớp bắt buộc" in error_traceback
+    if for_local and (not existing_code.strip() or missing_api_repair) and (not error_traceback.strip() or missing_api_repair) and req_fns:
+        stub_lines: List[str] = []
+        folded_up = strip_accents(user_prompt).casefold()
+        needs_sp = "searchproblem" in folded_up or ("simpleai" in folded_up and "cspproblem" not in folded_up)
+        if needs_sp and not req_cls and req_fns:
+            stub_lines.append("class _SearchSolverProblem(SearchProblem):\n    ...")
+        for c_name in req_cls:
+            base_part = "(SearchProblem)" if (needs_sp and "Problem" in c_name) else ""
+            stub_lines.append(f"class {c_name}{base_part}:\n    ...")
+        for f_name in req_fns:
+            sig_hdr = typed_sigs.get(f_name, f"def {f_name}(...):")
+            stub_lines.append(f"{sig_hdr}\n    # Hàm độc lập mức module: gọi giải thuật và return kết quả đúng kiểu\n    ...")
+        parts.append(
+            "Khung chữ ký bắt buộc ở mức module (BẮT BUỘC giữ đủ cả lớp và hàm độc lập dưới đây):\n```python\n"
+            + "\n\n".join(stub_lines)
+            + "\n```"
+        )
     if existing_code.strip():
-        parts.append(f"Mã hiện tại:\n{existing_code}")
+        parts.append(f"Mã hiện tại:\n```python\n{existing_code.strip()}\n```")
     if error_traceback.strip():
-        parts.append(f"Chi tiết lỗi:\n{error_traceback}")
+        parts.append(
+            f"Chi tiết lỗi cần sửa ngay:\n{error_traceback}\n\n"
+            "HƯỚNG DẪN SỬA LỖI BẮT BUỘC: Hãy sửa triệt để lỗi trên trong `Mã hiện tại` "
+            "(bổ sung đầy đủ mọi hàm/lớp còn thiếu ở mức module, khai báo đủ biến còn thiếu, bổ sung lệnh `return` đúng kiểu) "
+            "và xuất lại TOÀN BỘ chương trình Python hoàn chỉnh trong ```python ... ```."
+        )
     completing_template = bool(existing_code.strip()) and is_starter_template(existing_code) and not error_traceback.strip()
     if (not existing_code.strip() or completing_template) and not error_traceback.strip() and not prompt_forbids_print(user_prompt):
         input_hint = "" if _prompt_requests_stdin(user_prompt) else " (gán sẵn dữ liệu mẫu, không dùng `input()`)"
+        must_tail = f" định nghĩa đủ ({', '.join([*req_cls, *(f'{fn}(...)' for fn in req_fns)])}) ở mức module," if (req_cls or req_fns) else ""
         parts.append(
-            f'Viết chương trình Python hoàn chỉnh gồm `def main():` gọi đúng hàm/lớp theo đề{input_hint}, '
+            f'Viết chương trình Python hoàn chỉnh{must_tail} gồm `def main():` gọi đúng hàm/lớp theo đề{input_hint}, '
             'print kết quả thực tế theo đúng định dạng yêu cầu nếu có, và `if __name__ == "__main__":\\n    main()`.'
         )
     return system_prompt, "\n\n".join(parts)
@@ -638,6 +833,7 @@ def call_tier2_local_llm(
     error_traceback: str = "",
     workspace_context: str = "",
     diagnostics: Optional[List[str]] = None,
+    timeout_override: Optional[float] = None,
 ) -> Optional[Tuple[str, str]]:
     messages = diagnostics if diagnostics is not None else []
     system_prompt, user_msg = build_context_injected_prompt(
@@ -657,14 +853,18 @@ def call_tier2_local_llm(
     if not isinstance(model, str) or model.casefold().endswith(("-cloud", ":cloud")) or "@cloud" in model.casefold():
         messages.append("Chọn model Ollama được tải trên máy để dùng AI cục bộ.")
         return None
-    timeout = float(CONFIG.get("local_timeout", 90.0))
+    timeout = float(timeout_override) if timeout_override is not None else float(CONFIG.get("local_timeout", 75.0))
+    perf_opts = _ollama_perf_options(len(system_prompt) + len(user_msg))
+    if error_traceback.strip():
+        perf_opts["num_predict"] = min(perf_opts["num_predict"], 960)
+        perf_opts["temperature"] = 0.2
     payload = {
         "model": model,
         "system": system_prompt,
         "prompt": user_msg,
         "stream": False,
         "keep_alive": "90m",
-        "options": _ollama_perf_options(len(system_prompt) + len(user_msg)),
+        "options": perf_opts,
     }
     try:
         try:
@@ -691,7 +891,7 @@ def call_tier2_local_llm(
         body = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/generate", payload, timeout)
     except HTTPError as exc:
         if exc.code == 404:
-            messages.append(f"Ollama chưa có model {model}. Chạy setup_ollama.bat để tải model.")
+            messages.append(f"Ollama chưa có model {model}. Chạy setup.bat (chọn [2]) để tải model.")
         else:
             messages.append(_provider_error("Ollama", exc))
         return None

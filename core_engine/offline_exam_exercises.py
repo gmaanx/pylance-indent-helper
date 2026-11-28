@@ -125,6 +125,65 @@ def _find_requested_func_name(folded: str, candidates: Tuple[str, ...]) -> Optio
     return None
 
 
+def _extract_func_param_names(text: str, fn_name: str) -> List[str]:
+    """Extract parameter identifiers of `fn_name(...)` respecting nested bracket annotations like `dict[str, list[str]]`."""
+    cleaned = normalize_pdf_code_artifacts(text)
+    m = re.search(rf"\b{re.escape(fn_name)}\s*\(", cleaned, flags=re.IGNORECASE)
+    if not m:
+        return []
+    open_idx = m.end() - 1
+    depth = 0
+    in_q: Optional[str] = None
+    esc = False
+    inner: Optional[str] = None
+    for idx in range(open_idx, min(len(cleaned), open_idx + 360)):
+        ch = cleaned[idx]
+        if in_q:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == in_q:
+                in_q = None
+            continue
+        if ch in ("'", '"'):
+            in_q = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                inner = cleaned[open_idx + 1 : idx]
+                break
+    if not inner:
+        return []
+    parts: List[str] = []
+    b_depth = 0
+    cur: List[str] = []
+    for ch in inner:
+        if ch in "([{":
+            b_depth += 1
+            cur.append(ch)
+        elif ch in ")]}":
+            b_depth = max(0, b_depth - 1)
+            cur.append(ch)
+        elif ch == "," and b_depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        parts.append("".join(cur).strip())
+    names: List[str] = []
+    for part in parts:
+        if not part or part in ("self", "/", "*") or part.startswith("*"):
+            continue
+        head = part.split(":", 1)[0].split("=", 1)[0].strip()
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", head):
+            names.append(head)
+    return names
+
+
 def parse_exam_coding_exercise(text: str) -> Optional[Dict[str, Any]]:
     """Recognize complete pure-Python and parameterized SimpleAI coding exercises from the course exam bank."""
     cleaned = normalize_pdf_code_artifacts(text)
@@ -135,28 +194,28 @@ def parse_exam_coding_exercise(text: str) -> Optional[Dict[str, Any]]:
     # 0. Bai 5.x (SimpleAI): Parameterized binary CSP function (e.g. giai_csp_phan_ca(domains, pairs) -> dict | None)
     if "simpleai" in folded:
         m_scsp = re.search(
-            r"\b(?P<fn>giai_csp_[A-Za-z0-9_]*|giai_csp|solve_csp_[A-Za-z0-9_]*|solve_csp|phan_ca_csp|to_mau_csp)"
-            r"\s*\(\s*(?P<p1>[A-Za-z_][A-Za-z0-9_]*)\s*(?::[^,)]+)?,\s*(?P<p2>[A-Za-z_][A-Za-z0-9_]*)",
+            r"\b(?P<fn>giai_csp_[A-Za-z0-9_]*|giai_csp|solve_csp_[A-Za-z0-9_]*|solve_csp|phan_ca_csp|to_mau_csp)\s*\(",
             folded,
         )
         if m_scsp and ("cspproblem" in folded or "backtrack" in folded or "csp" in folded):
             same_len = len(cleaned) == len(folded)
             fn_exact = cleaned[m_scsp.start("fn") : m_scsp.end("fn")] if same_len else m_scsp.group("fn")
-            p1_exact = cleaned[m_scsp.start("p1") : m_scsp.end("p1")] if same_len else m_scsp.group("p1")
-            p2_exact = cleaned[m_scsp.start("p2") : m_scsp.end("p2")] if same_len else m_scsp.group("p2")
-            sample_domains = _extract_named_dict_literal(cleaned, p1_exact) or _extract_named_dict_literal(cleaned, "domains")
-            sample_pairs = _extract_named_literal(cleaned, (p2_exact, "pairs", "edges", "conflicts", "xung_dot"), "[", "]")
-            return {
-                "type": "exam_simpleai_csp_func",
-                "fn_name": fn_exact,
-                "p1": p1_exact,
-                "p2": p2_exact,
-                "use_mrv": "most_constrained_variable" in folded or "mrv" in folded,
-                "use_deg": ("highest_degree_variable" in folded or "degree" in folded) and "most_constrained_variable" not in folded,
-                "use_lcv": "least_constraining_value" in folded or "lcv" in folded,
-                "domains": sample_domains if isinstance(sample_domains, dict) else None,
-                "pairs": sample_pairs if isinstance(sample_pairs, list) else None,
-            }
+            csp_params = _extract_func_param_names(cleaned, fn_exact)
+            if len(csp_params) == 2:
+                p1_exact, p2_exact = csp_params[0], csp_params[1]
+                sample_domains = _extract_named_dict_literal(cleaned, p1_exact) or _extract_named_dict_literal(cleaned, "domains")
+                sample_pairs = _extract_named_literal(cleaned, (p2_exact, "pairs", "edges", "conflicts", "xung_dot"), "[", "]")
+                return {
+                    "type": "exam_simpleai_csp_func",
+                    "fn_name": fn_exact,
+                    "p1": p1_exact,
+                    "p2": p2_exact,
+                    "use_mrv": "most_constrained_variable" in folded or "mrv" in folded,
+                    "use_deg": ("highest_degree_variable" in folded or "degree" in folded) and "most_constrained_variable" not in folded,
+                    "use_lcv": "least_constraining_value" in folded or "lcv" in folded,
+                    "domains": sample_domains if isinstance(sample_domains, dict) else None,
+                    "pairs": sample_pairs if isinstance(sample_pairs, list) else None,
+                }
         return None
 
     # 1. Bai 2.1: vector_nguyen_am & do_tuong_dong_cosine
@@ -279,10 +338,12 @@ def parse_exam_coding_exercise(text: str) -> Optional[Dict[str, Any]]:
     entropy_fn = _find_requested_func_name(folded, ("tinh_entropy", "entropy"))
     ig_fn = _find_requested_func_name(folded, ("information_gain", "tinh_information_gain", "do_loi_thong_tin"))
     if entropy_fn and ig_fn:
+        ig_params = _extract_func_param_names(cleaned, ig_fn)
         return {
             "type": "exam_entropy_ig",
             "entropy_fn": entropy_fn,
             "ig_fn": ig_fn,
+            "ig_params": ig_params,
         }
 
     # 9. Bai 3.3: DLS & IDS on graph dict
@@ -301,12 +362,23 @@ def parse_exam_coding_exercise(text: str) -> Optional[Dict[str, Any]]:
     mm_fn = _find_requested_func_name(folded, ("minimax",))
     ab_fn = _find_requested_func_name(folded, ("alpha_beta", "alphabeta"))
     if (mm_fn or ab_fn) and not re.search(r"\b(?:tictactoe|tic-tac-toe|caro|nim)\b", folded):
+        ab_params = _extract_func_param_names(cleaned, ab_fn) if ab_fn else []
+        mm_params = _extract_func_param_names(cleaned, mm_fn) if mm_fn else []
+        check_params = ab_params or mm_params
+        nested_list_mode = bool(
+            check_params
+            and not any(p.lower() in ("tree", "scores", "values", "utilities", "graph") for p in check_params)
+            and ("list" in folded or "de quy" in folded or "depth" in [p.lower() for p in check_params])
+        )
         sample_tree = _extract_named_dict_literal(cleaned, "tree")
         sample_scores = _extract_named_literal(cleaned, ("scores", "values", "utilities", "leaf_values"), "{", "}")
         return {
             "type": "exam_minimax_alphabeta",
             "mm_fn": mm_fn,
             "ab_fn": ab_fn,
+            "ab_params": ab_params,
+            "mm_params": mm_params,
+            "nested_list_mode": nested_list_mode,
             "tree": sample_tree if isinstance(sample_tree, dict) else None,
             "scores": sample_scores if isinstance(sample_scores, dict) else None,
         }
@@ -1008,7 +1080,61 @@ def _solve_exam_entropy_ig(problem: Dict[str, Any]):
 
     entropy_fn = problem["entropy_fn"]
     ig_fn = problem["ig_fn"]
-    code = f'''from __future__ import annotations
+    ig_params = problem.get("ig_params") or []
+    if len(ig_params) == 3:
+        p_rows, p_attr, p_target = ig_params[0], ig_params[1], ig_params[2]
+        code = f'''from __future__ import annotations
+
+import math
+from collections import Counter, defaultdict
+
+
+def {entropy_fn}(labels: list) -> float:
+    """Tính Entropy Shannon (cơ số 2) cho danh sách nhãn; trả về 0.0 nếu danh sách rỗng hoặc thuần nhất."""
+    total = len(labels)
+    if total == 0:
+        return 0.0
+    counts = Counter(labels)
+    ent = 0.0
+    for cnt in counts.values():
+        p = cnt / total
+        if p > 0.0:
+            ent -= p * math.log2(p)
+    return float(ent)
+
+
+def {ig_fn}({p_rows}: list[dict], {p_attr}: str, {p_target}: str) -> float:
+    """Tính độ lợi thông tin IG(S, attr) trên danh sách bản ghi dict."""
+    total = len({p_rows})
+    if total == 0:
+        return 0.0
+    parent_labels = [r[{p_target}] for r in {p_rows}]
+    parent_ent = {entropy_fn}(parent_labels)
+    groups: dict[object, list] = defaultdict(list)
+    for r in {p_rows}:
+        groups[r.get({p_attr})].append(r[{p_target}])
+    weighted_child_ent = sum((len(sub) / total) * {entropy_fn}(sub) for sub in groups.values() if sub)
+    return float(parent_ent - weighted_child_ent)
+
+
+def main() -> None:
+    du_lieu = [
+        {{"ThoiTiet": "Nang", "Choi": "Khong"}},
+        {{"ThoiTiet": "Nang", "Choi": "Khong"}},
+        {{"ThoiTiet": "UAm", "Choi": "Co"}},
+        {{"ThoiTiet": "Mua", "Choi": "Co"}},
+        {{"ThoiTiet": "Mua", "Choi": "Khong"}},
+    ]
+    nhan_goc = [r["Choi"] for r in du_lieu]
+    print(f"Entropy tập gốc: {{{entropy_fn}(nhan_goc):.6f}}")
+    print(f"Information Gain (ThoiTiet): {{{ig_fn}(du_lieu, 'ThoiTiet', 'Choi'):.6f}}")
+
+
+if __name__ == "__main__":
+    main()
+'''
+    else:
+        code = f'''from __future__ import annotations
 
 import math
 from collections import Counter
@@ -1138,6 +1264,123 @@ def _solve_exam_minimax_alphabeta(problem: Dict[str, Any]):
 
     mm_fn = problem.get("mm_fn")
     ab_fn = problem.get("ab_fn")
+    if problem.get("nested_list_mode"):
+        ab_params = problem.get("ab_params") or ["node", "depth", "alpha", "beta", "is_max"]
+        mm_params = problem.get("mm_params") or ["node", "depth", "is_max"]
+        parts = ["from __future__ import annotations\n"]
+        main_calls = []
+        if mm_fn:
+            if len(mm_params) == 2:
+                p_n, p_m = mm_params
+                parts.append(
+                    f'''
+
+def {mm_fn}({p_n}, {p_m}: bool = True):
+    if isinstance({p_n}, (int, float)) or not {p_n}:
+        return {p_n}
+    if {p_m}:
+        return max({mm_fn}(child, False) for child in {p_n})
+    return min({mm_fn}(child, True) for child in {p_n})
+'''
+                )
+                main_calls.append(f'    print("Giá trị Minimax tại gốc:", {mm_fn}(cay_mau, True))')
+            else:
+                p_n = mm_params[0] if len(mm_params) >= 1 else "node"
+                p_d = mm_params[1] if len(mm_params) >= 2 else "depth"
+                p_m = mm_params[2] if len(mm_params) >= 3 else "is_max"
+                parts.append(
+                    f'''
+
+def {mm_fn}({p_n}, {p_d}: int, {p_m}: bool = True):
+    if {p_d} == 0 or isinstance({p_n}, (int, float)) or not {p_n}:
+        return {p_n}
+    if {p_m}:
+        return max({mm_fn}(child, {p_d} - 1, False) for child in {p_n})
+    return min({mm_fn}(child, {p_d} - 1, True) for child in {p_n})
+'''
+                )
+                main_calls.append(f'    print("Giá trị Minimax tại gốc:", {mm_fn}(cay_mau, 2, True))')
+        if ab_fn:
+            if len(ab_params) == 4:
+                p_n, p_a, p_b, p_m = ab_params
+                parts.append(
+                    f'''
+
+def {ab_fn}({p_n}, {p_a}: float = float("-inf"), {p_b}: float = float("inf"), {p_m}: bool = True):
+    if isinstance({p_n}, (int, float)) or not {p_n}:
+        return {p_n}
+    if {p_m}:
+        best = float("-inf")
+        for child in {p_n}:
+            val = {ab_fn}(child, {p_a}, {p_b}, False)
+            if val > best:
+                best = val
+            if best > {p_a}:
+                {p_a} = best
+            if {p_a} >= {p_b}:
+                break
+        return best
+    best = float("inf")
+    for child in {p_n}:
+        val = {ab_fn}(child, {p_a}, {p_b}, True)
+        if val < best:
+            best = val
+        if best < {p_b}:
+            {p_b} = best
+        if {p_a} >= {p_b}:
+            break
+    return best
+'''
+                )
+                main_calls.append(f'    print("Giá trị Alpha-Beta tại gốc:", {ab_fn}(cay_mau, float("-inf"), float("inf"), True))')
+            else:
+                p_n = ab_params[0] if len(ab_params) >= 1 else "node"
+                p_d = ab_params[1] if len(ab_params) >= 2 else "depth"
+                p_a = ab_params[2] if len(ab_params) >= 3 else "alpha"
+                p_b = ab_params[3] if len(ab_params) >= 4 else "beta"
+                p_m = ab_params[4] if len(ab_params) >= 5 else "is_max"
+                parts.append(
+                    f'''
+
+def {ab_fn}({p_n}, {p_d}: int, {p_a}: float = float("-inf"), {p_b}: float = float("inf"), {p_m}: bool = True):
+    if {p_d} == 0 or isinstance({p_n}, (int, float)) or not {p_n}:
+        return {p_n}
+    if {p_m}:
+        best = float("-inf")
+        for child in {p_n}:
+            val = {ab_fn}(child, {p_d} - 1, {p_a}, {p_b}, False)
+            if val > best:
+                best = val
+            if best > {p_a}:
+                {p_a} = best
+            if {p_a} >= {p_b}:
+                break
+        return best
+    best = float("inf")
+    for child in {p_n}:
+        val = {ab_fn}(child, {p_d} - 1, {p_a}, {p_b}, True)
+        if val < best:
+            best = val
+        if best < {p_b}:
+            {p_b} = best
+        if {p_a} >= {p_b}:
+            break
+    return best
+'''
+                )
+                main_calls.append(f'    print("Giá trị Alpha-Beta tại gốc:", {ab_fn}(cay_mau, 2, float("-inf"), float("inf"), True))')
+        parts.append(
+            "\n\ndef main() -> None:\n    cay_mau = [[3, 5], [6, 9], [1, 2]]\n"
+            + "\n".join(main_calls)
+            + '\n\n\nif __name__ == "__main__":\n    main()\n'
+        )
+        return OfflineSolution(
+            "exam_minimax_alphabeta",
+            "".join(parts),
+            "Đã cài đặt Minimax / Alpha-Beta đệ quy trên cây danh sách lồng nhau.",
+            ("Cắt nhánh chính xác khi alpha >= beta.",),
+        )
+
     sample_tree = problem.get("tree") or {
         "Root": ["B1", "B2"],
         "B1": ["C1", "C2"],

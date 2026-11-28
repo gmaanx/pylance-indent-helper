@@ -17,7 +17,12 @@ _SCRIPT_ROOT = str(Path(__file__).resolve().parent)
 if _SCRIPT_ROOT not in sys.path:
     sys.path.insert(0, _SCRIPT_ROOT)
 
-from core_engine.config_manager import PROVIDERS, save_encrypted_credential
+from core_engine.config_manager import (
+    PROVIDERS,
+    clear_encrypted_credentials,
+    save_encrypted_credential,
+    session_credentials,
+)
 from go_cai_dat import (
     _remove_tree,
     copy_runtime_files,
@@ -46,6 +51,12 @@ WHEELS = SOURCE / "setup_lab" / "wheels"
 IDE_NAMES = {"vscode": "code", "antigravity": "antigravity"}
 IDE_DIRS = {"vscode": "Microsoft VS Code", "antigravity": "antigravity"}
 DEPENDENCIES = {"simpleai": ("simpleai",), "full": ("simpleai", "miniKanren", "sympy")}
+
+
+def _default_profile() -> str:
+    if all(any(WHEELS.glob(f"{name.lower()}-*.whl")) for name in DEPENDENCIES["full"]):
+        return "full"
+    return "simpleai"
 
 
 def find_ide_cli(ide: str) -> Path | None:
@@ -541,12 +552,133 @@ def install_all(
         print(f"[OK] Local AI san sang voi {optional['localModel']}.")
 
 
+def _prompt_and_save_api_key(root: Path, *, preset_provider: str | None = None, skip_check: bool = False) -> bool:
+    """Interactive Cloud API key configuration (merged into unified setup.bat)."""
+    from core_engine.brain_router import call_tier1_cloud_llm
+
+    provider_map = {str(idx): name for idx, name in enumerate(PROVIDERS, start=1)}
+    provider_hint = ", ".join(f"{idx}={name}" for idx, name in enumerate(PROVIDERS, start=1))
+    try:
+        raw_prov = (
+            preset_provider
+            or input(f"Chon nha cung cap ({provider_hint}) [1=gemini]: ").strip().lower()
+            or "1"
+        )
+        user_explicit_provider = raw_prov not in ("1", "")
+        provider = provider_map.get(raw_prov, raw_prov)
+        if provider not in PROVIDERS:
+            print(f"[LOI] Nha cung cap '{raw_prov}' khong hop le. Ho tro: {', '.join(PROVIDERS)}.", file=sys.stderr)
+            return False
+        raw_key = input(f"Dan API key {provider} (Ctrl+V roi Enter): ").strip().strip('"').strip("'").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n[!] Da huy nhap API key.")
+        return False
+
+    if not raw_key:
+        print("[!] Chua nhap API key — bo qua buoc luu key.")
+        return False
+
+    # Smart prefix auto-detection if user kept default [1=gemini] while pasting Groq / OpenRouter / OpenAI key
+    if not user_explicit_provider and not preset_provider:
+        if raw_key.startswith("gsk_") and "groq" in PROVIDERS:
+            provider = "groq"
+            print("[Tu nhan dien] Key 'gsk_...' -> tu dong chon nha cung cap: groq", flush=True)
+        elif raw_key.startswith("sk-or-") and "openrouter" in PROVIDERS:
+            provider = "openrouter"
+            print("[Tu nhan dien] Key 'sk-or-...' -> tu dong chon nha cung cap: openrouter", flush=True)
+
+    if not skip_check:
+        print(f"Dang kiem tra ket noi API {provider}...", flush=True)
+        with session_credentials({provider: raw_key}):
+            probe_ok = call_tier1_cloud_llm(
+                system_prompt="Chi tra ve mot dong code Python.",
+                user_msg="Tra ve chinh xac dong sau: print('API_OK')",
+                max_attempts=1,
+            )
+        if probe_ok is not None:
+            print(f"[OK] {provider} phan hoi thanh cong!", flush=True)
+        else:
+            try:
+                ans = input(
+                    f"[!] Chua ket noi duoc {provider} ngay luc nay (mang chan hoac sai key). "
+                    "Van ma hoa va luu san key nay? [Y/n]: "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                ans = "y"
+            if ans in ("n", "no", "khong", "0"):
+                print("[!] Da bo qua khong luu API key.")
+                return False
+
+    saved_path = save_encrypted_credential(provider, raw_key, install_dir=root)
+    print(
+        f"[OK] Da ma hoa va luu key {provider} ({saved_path.name}). "
+        "Bam Alt+2 / Alt+3 trong IDE se chay ngam khong hien popup!",
+        flush=True,
+    )
+    return True
+
+
+def _run_interactive_addons(root: Path) -> int:
+    """Optional post-install 1-key menu so double-clicking setup.bat stays ~6s fast yet does EVERYTHING."""
+    print("", flush=True)
+    print("=====================================================================", flush=True)
+    print("[OK] Phan cot loi (Offline + Thu vien simpleai/kanren/sympy + IDE) DA SAN SANG!", flush=True)
+    print("=====================================================================", flush=True)
+    print("Tuy chon cai them (bam phim so roi Enter, hoac bam Enter de xong ngay):", flush=True)
+    print("  [Enter / 0] Xong ngay - chi dung Offline cuc nhanh (0 giay cho them)", flush=True)
+    print("  [1] Nhap & ma hoa Cloud API Key (Gemini / Groq / DeepSeek / OpenRouter / OpenAI)", flush=True)
+    print("  [2] Cai them Local AI Ollama cho Alt+5 (tu chon model theo RAM + nap san)", flush=True)
+    print("  [3] Cai CA HAI: Cloud API Key + Local AI Ollama (du phong 100%)", flush=True)
+    print("  [4] Xoa API Key da luu tren may", flush=True)
+    try:
+        choice = input("Lua chon cua ban [0]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("", flush=True)
+        return 0
+
+    if choice in ("", "0", "q", "quit", "exit"):
+        return 0
+    if choice == "4":
+        clear_encrypted_credentials(install_dir=root)
+        print("[OK] Da xoa toan bo API key da luu tren may.", flush=True)
+        return 0
+    if choice not in ("1", "2", "3"):
+        print(f"[!] Lua chon '{choice}' khong hop le — giu nguyen ban cai Offline + IDE da hoan tat.", flush=True)
+        return 0
+
+    if choice in ("1", "3"):
+        _prompt_and_save_api_key(root)
+
+    if choice in ("2", "3"):
+        try:
+            optional = install_local_ai(None, auto_model=True)
+            print(f"[OK] Local AI san sang voi {optional['localModel']}.", flush=True)
+        except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            print(
+                f"[LOI] Local AI chua san sang: {exc}\n"
+                "      (Phan Offline Alt+1/Alt+2/Alt+4/Alt+6 va thu vien Python van hoat dong 100%!)",
+                file=sys.stderr,
+            )
+            return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ide", choices=("auto", *IDE_NAMES, "manual"), default="auto")
     parser.add_argument("--ide-cli", type=Path, help="Duong dan day du den CLI cua IDE.")
-    parser.add_argument("--profile", choices=DEPENDENCIES, default="simpleai", help="simpleai gon nhe; full them miniKanren va SymPy.")
+    parser.add_argument(
+        "--profile",
+        choices=DEPENDENCIES,
+        default=_default_profile(),
+        help="simpleai gon nhe; full them miniKanren va SymPy (tu dong chon full neu du wheel).",
+    )
     parser.add_argument("--check", action="store_true", help="Kiem tra Python, goi offline va CLI.")
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Cai ngay Offline + IDE (~6s) roi hien menu tuy chon API Key / Ollama tren cung 1 cua so.",
+    )
     component = parser.add_mutually_exclusive_group()
     component.add_argument("--local", action="store_true", help="Cai Offline, API va Ollama.")
     component.add_argument("--local-shell", action="store_true", help="Cai Ollama va tich hop Alt+5.")
@@ -554,15 +686,24 @@ def main() -> int:
     parser.add_argument("--auto-model", action="store_true", help="Tu chon model Ollama theo dung luong RAM.")
     parser.add_argument("--provider", choices=PROVIDERS, help="Nha cung cap Cloud luu san API key ma hoa.")
     parser.add_argument("--key", help="API key luu ma hoa san cho Alt+2 / Alt+3.")
+    parser.add_argument("--skip-key-check", action="store_true", help="Luu ma hoa API key luon khong can test mang.")
+    parser.add_argument("--clear-key", action="store_true", help="Xoa toan bo API key da luu tren may.")
     args = parser.parse_args()
+
+    if getattr(args, "clear_key", False):
+        clear_encrypted_credentials()
+        print("[OK] Da xoa toan bo API key da luu tren may.")
+        return 0
+
     wants_local = getattr(args, "local", False) or getattr(args, "local_shell", False)
     auto_model = getattr(args, "auto_model", False)
+    interactive = getattr(args, "interactive", False)
     api_provider = getattr(args, "provider", None)
     api_key = getattr(args, "key", None)
     if args.local_model is not None and not wants_local:
         parser.error("--local-model can dung cung --local-shell hoac --local.")
-    if bool(api_provider) != bool(api_key):
-        parser.error("--provider va --key can truyen cung nhau.")
+    if api_key and not api_provider:
+        parser.error("--key can truyen cung --provider.")
     try:
         local_model = normalize_model(args.local_model) if args.local_model is not None else None
         profile = "local" if args.local_shell else args.profile
@@ -580,10 +721,18 @@ def main() -> int:
                 cli, python, profile, local_model,
                 wants_local=wants_local,
                 auto_model=auto_model,
-                api_provider=api_provider,
+                api_provider=api_provider if api_key else None,
                 api_key=api_key,
                 sync_secondary_ides=(args.ide in ("auto", "antigravity")),
             )
+            if api_provider and not api_key:
+                _prompt_and_save_api_key(
+                    install_root(),
+                    preset_provider=api_provider,
+                    skip_check=getattr(args, "skip_key_check", False),
+                )
+            elif interactive and not wants_local and not api_key:
+                return _run_interactive_addons(install_root())
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"[LOI] Cai dat chua hoan tat. {exc}", file=sys.stderr)
         return 1

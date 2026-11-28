@@ -156,8 +156,9 @@ def process_request(
         def _candidate_rank(passed: bool, c_err: bool, r_res, detail: str) -> tuple:
             return (
                 1 if passed else 0,
-                1 if r_res.ok else 0,
+                1 if (r_res.ok and not c_err) else 0,
                 0 if c_err else 1,
+                1 if r_res.ok else 0,
                 -len(detail or ""),
             )
 
@@ -176,11 +177,27 @@ def process_request(
 
         repair_prompt = prompt_for_repair or raw_text
         skels = skeletons_for_repair or []
-        max_repairs = 3 if tier.startswith("tier1_") else 2
+        is_env_missing_pkg = (
+            not run_res.ok
+            and not has_contract_err
+            and any(
+                f"ModuleNotFoundError: No module named {pkg}" in issue_detail
+                for pkg in ("'simpleai'", "'kanren'", "'sympy'", "'numpy'")
+            )
+            and not any(
+                sub in issue_detail
+                for sub in ("'simpleai.search.heuristics'", "'simpleai.search.constraints'")
+            )
+        )
+        max_repairs = 0 if is_env_missing_pkg else (3 if tier.startswith("tier1_") else 2)
         for _round in range(max_repairs):
             if passed_all:
                 break
-            base_existing = starter_for_contract if (has_contract_err and not editing_existing) else code
+            if not tier.startswith("tier1_") and (time.perf_counter() - started) > 28.0:
+                break
+            base_existing = code
+            if has_contract_err and starter_for_contract and not editing_existing:
+                base_existing = f"# Khung đề gốc:\n{starter_for_contract}\n\n# Bản nháp cần sửa:\n{code}"
             repaired_candidate = None
             if tier.startswith("tier1_") and allow_cloud:
                 provider_only = tier[6:]
@@ -194,7 +211,8 @@ def process_request(
             elif allow_local:
                 repaired_candidate = call_tier2_local_llm(
                     repair_prompt, None, base_existing,
-                    error_traceback=issue_detail, workspace_context=ws_context, diagnostics=diagnostics,
+                    error_traceback=issue_detail, workspace_context=ws_context,
+                    diagnostics=diagnostics, timeout_override=30.0,
                 )
             if repaired_candidate is None:
                 break
@@ -234,7 +252,7 @@ def process_request(
 
     parsed = parse_user_input(raw_text, force_mode="self_fix" if action_mode == "self_fix" else None)
     if parsed.mode == "cfg":
-        return finish("unsupported", "config", error="Nhập cấu hình và API key qua nhap_api_key.bat, tránh đặt trong mã nguồn.")
+        return finish("unsupported", "config", error="Nhập cấu hình và API key qua setup.bat (chọn [1]), tránh đặt trong mã nguồn.")
 
     completing_template = (
         bool(parsed.existing_code)
@@ -262,7 +280,7 @@ def process_request(
                     offline_error = exc
             else:
                 if solution is not None:
-                    if not completing_template or check_api_contract(solution.code, raw_text, parsed.existing_code) == "":
+                    if check_api_contract(solution.code, raw_text, parsed.existing_code if completing_template else "") == "":
                         return finish(
                             solution.validation_status, f"offline_{solution.problem_type}", solution.code,
                             summary=solution.summary, notes=(solution.summary, *solution.diagnostics),
@@ -287,7 +305,7 @@ def process_request(
             if (
                 fast_sol is not None
                 and fast_sol.validation_status == "verified"
-                and (not completing_template or check_api_contract(fast_sol.code, raw_text, parsed.existing_code) == "")
+                and check_api_contract(fast_sol.code, raw_text, parsed.existing_code if completing_template else "") == ""
             ):
                 return finish(
                     fast_sol.validation_status,
@@ -387,7 +405,11 @@ def process_request(
         return finish("invalid" if detected_issue else "unsupported", "self_fix", error=error)
     sample = _explicit_reference(parsed)
     if sample is None and allow_rag_fallback and rag_fallback_skeleton is not None:
-        sample = rag_fallback_skeleton
+        cand_rag_code = customize_skeleton_with_prompt(
+            rag_fallback_skeleton["id"], rag_fallback_skeleton["code"], parsed.prompt_text, parsed.dsl_params,
+        )
+        if check_api_contract(cand_rag_code, raw_text, parsed.existing_code if completing_template else "") == "":
+            sample = rag_fallback_skeleton
     if sample:
         code = customize_skeleton_with_prompt(sample["id"], sample["code"], parsed.prompt_text, parsed.dsl_params)
         summary = ""

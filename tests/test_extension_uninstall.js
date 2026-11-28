@@ -528,7 +528,7 @@ test('missing installation never chooses a source path', async () => {
   h.files.delete(h.runtimePath);
   await h.run('instantFormat');
   assert.equal(h.children.length, 0);
-  assert.match(h.notices.at(-1).message, /setup_nhanh\.bat/);
+  assert.match(h.notices.at(-1).message, /setup\.bat/);
 });
 
 test('Alt+0 confirms and invokes FULL uninstall (--all) removing Alt+1..5 and Ollama', async () => {
@@ -608,10 +608,10 @@ test('Alt+5 asks for independent Ollama setup and accepts legacy model records',
   const fresh = harness({ localModel: null });
   await fresh.run('localAi');
   assert.equal(fresh.children.length, 0);
-  assert.match(fresh.notices.at(-1).message, /setup_ollama\.bat/);
+  assert.match(fresh.notices.at(-1).message, /setup\.bat/);
   fresh.files.delete(fresh.runtimePath);
   await fresh.run('localAi');
-  assert.match(fresh.notices.at(-1).message, /setup_ollama\.bat/);
+  assert.match(fresh.notices.at(-1).message, /setup\.bat/);
 
   const legacy = harness({ localModel: null, legacyLocalModel: 'local:1b' });
   delete legacy.runtime.baseEnabled;

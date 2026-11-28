@@ -810,7 +810,20 @@ def ensure_runnable_print(
     main_blocks = [stmt for stmt in tree.body if _is_main_guard(stmt)]
     if main_blocks:
         last_main = main_blocks[-1]
-        if last_main.body:
+        # Heal dangling `if __name__ == "__main__": main()` when `def main():` was forgotten!
+        if (
+            "main" not in defined_names
+            and len(last_main.body) == 1
+            and isinstance(last_main.body[0], ast.Expr)
+            and isinstance(last_main.body[0].value, ast.Call)
+            and isinstance(last_main.body[0].value.func, ast.Name)
+            and last_main.body[0].value.func.id == "main"
+        ):
+            trimmed_lines = code.splitlines()[: last_main.lineno - 1]
+            code = "\n".join(trimmed_lines).rstrip() + "\n"
+            tree = ast.parse(code)
+            main_blocks = []
+        elif last_main.body:
             last_stmt = last_main.body[-1]
             if isinstance(last_stmt, ast.Assign) and len(last_stmt.targets) == 1 and isinstance(last_stmt.targets[0], ast.Name):
                 var_name = last_stmt.targets[0].id
@@ -835,7 +848,8 @@ def ensure_runnable_print(
                     f"{indent}    {print_stmt}",
                 ]
                 return _prepend_import("\n".join(lines).rstrip() + "\n", imp), True
-        return code, False
+        if main_blocks:
+            return code, False
 
     # 2. Top-level script computes a result after definitions without printing.
     last_def_idx = -1

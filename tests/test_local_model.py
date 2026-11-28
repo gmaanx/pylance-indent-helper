@@ -90,7 +90,7 @@ class LocalModelTests(unittest.TestCase):
         with patch.object(brain_router, "_post_json", side_effect=error) as post:
             response = self.request(allow_local=True)
         post.assert_called_once()
-        self.assertIn("setup_ollama.bat", " ".join(response["diagnostics"]))
+        self.assertIn("setup.bat", " ".join(response["diagnostics"]))
 
     def test_truncated_generation_cannot_open_a_preview(self):
         with patch.object(brain_router, "_post_json", side_effect=[
