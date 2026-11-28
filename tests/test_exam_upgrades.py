@@ -48,7 +48,11 @@ class ExamUpgradeTests(unittest.TestCase):
             with patch.object(local_ai, "detect_ram_gb", return_value=7.9):
                 self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:1.5b")
             with patch.object(local_ai, "detect_ram_gb", return_value=15.8):
-                self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:3b")
+                self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:1.5b")
+        with patch.object(local_ai, "detect_nvidia_vram_gb", return_value=4.5), patch.object(
+            local_ai, "detect_ram_gb", return_value=16.0
+        ):
+            self.assertEqual(local_ai.recommend_model_for_machine(), "qwen2.5-coder:3b")
         with patch.object(local_ai, "detect_nvidia_vram_gb", return_value=8.0), patch.object(
             local_ai, "detect_ram_gb", return_value=16.0
         ):
@@ -609,6 +613,14 @@ class ExamUpgradeTests(unittest.TestCase):
             "os.environ", {"LOCALAPPDATA": str(home / "AppData" / "Local")}
         ):
             self.assertEqual(go_cai_dat.install_root(), home / ".pylance-helper" / "engine")
+
+        # 3. `ollama pull` does NOT pass CREATE_NO_WINDOW so download % bar is visible in .bat console!
+        import subprocess as _sp
+        with patch.object(local_ai.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), patch.object(
+            local_ai.subprocess, "run", return_value=_sp.CompletedProcess([], 0)
+        ) as run_mock:
+            local_ai._run(["C:/Ollama/ollama.exe", "pull", "qwen2.5-coder:1.5b"], timeout=30)
+        self.assertEqual(run_mock.call_args.kwargs["creationflags"], 0)
 
 
 if __name__ == "__main__":

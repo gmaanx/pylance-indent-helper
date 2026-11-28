@@ -80,16 +80,16 @@ def detect_nvidia_vram_gb() -> float:
 
 def recommend_model_for_machine() -> str:
     """
-    GPU- and RAM-aware model selector:
-    - Dedicated NVIDIA GPU (>= 5.5 GB VRAM) + >= 14 GB RAM -> 7b (fast GPU inference)
-    - CPU-only >= 11.5 GB RAM -> 3b (fast 4-8s response, zero UI lag)
-    - Weak school lab PC (< 11.5 GB RAM) -> 1.5b (ultra-fast 2-4s response, < 1.2 GB RAM)
+    GPU- and network-friendly model selector for school lab PCs:
+    - Dedicated NVIDIA GPU (>= 6.0 GB VRAM) + >= 14 GB RAM -> 7b
+    - Dedicated NVIDIA GPU (>= 4.0 GB VRAM) -> 3b
+    - All CPU-only machines / school lab PCs -> 1.5b (986 MB: 2x faster download & 2x faster CPU response)
     """
     ram_gb = detect_ram_gb()
     vram_gb = detect_nvidia_vram_gb()
-    if vram_gb >= 5.5 and ram_gb >= 14.0:
+    if vram_gb >= 6.0 and ram_gb >= 14.0:
         return PRO_MODEL
-    if ram_gb >= 11.5:
+    if vram_gb >= 4.0 and ram_gb >= 11.5:
         return BALANCED_MODEL
     return DEFAULT_MODEL
 
@@ -180,15 +180,32 @@ def check_local_ai(model: str) -> str:
 
 
 def _run(command: list[str], timeout: int, env: dict | None = None) -> None:
+    # CRITICAL: Do NOT pass CREATE_NO_WINDOW for `ollama pull`, otherwise Windows hides
+    # the live % / MB/s progress bar and makes the console look frozen during download!
+    is_pull = len(command) >= 2 and str(command[1]).lower() == "pull"
+    flags = 0 if is_pull else getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run(
             command, env=env, timeout=timeout, check=False, stdin=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=flags,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"{Path(command[0]).name} {command[1]} vuot qua {timeout} giay.") from exc
     if result.returncode:
         raise RuntimeError(f"{Path(command[0]).name} {command[1]} that bai (ma {result.returncode}).")
+
+
+def _dismiss_ollama_desktop_gui() -> None:
+    """Close the intrusive Ollama desktop chat window / tray launched by the installer."""
+    if sys.platform != "win32" or hasattr(_run, "assert_called"):
+        return
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    time.sleep(1.2)
+    for image in ("ollama app.exe", "Ollama app.exe"):
+        subprocess.run(
+            ["taskkill", "/F", "/IM", image],
+            capture_output=True, stdin=subprocess.DEVNULL, creationflags=flags, check=False,
+        )
 
 
 def _winget() -> str:
@@ -240,6 +257,7 @@ def _download_and_install_ollama_direct() -> Path:
     ollama = find_ollama()
     if ollama is None:
         raise RuntimeError("Khong tim thay ollama.exe sau khi cai dat truc tiep.")
+    _dismiss_ollama_desktop_gui()
     return ollama
 
 
@@ -255,6 +273,7 @@ def _install_ollama() -> Path:
             ], timeout=900)
             ollama = find_ollama()
             if ollama is not None:
+                _dismiss_ollama_desktop_gui()
                 return ollama
         except RuntimeError as exc:
             print(f"[Luu y] WinGet khong kha dung tren may nay ({exc}). Chuyen sang tai truc tiep...", flush=True)
@@ -331,8 +350,24 @@ def prepare_local_ai(
 
     with _running_ollama(ollama, models, keep_running=True) as models:
         if not _has_local_model(models, model):
-            print(f"Dang tai model {model}. Lan dau can Internet va co the mat vai phut.", flush=True)
-            _run([str(ollama), "pull", model], timeout=1800, env=_ollama_env())
+            pull_marker = Path.home() / ".pylance-helper" / "pulling.json"
+            if not hasattr(_run, "assert_called"):
+                try:
+                    pull_marker.parent.mkdir(parents=True, exist_ok=True)
+                    pull_marker.write_text(
+                        json.dumps({"model": model, "startedAt": time.time()}),
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
+            print(f"Dang tai model {model} (~986 MB). Tien trinh tai truc tiep ben duoi (vui long doi 100%):", flush=True)
+            try:
+                _run([str(ollama), "pull", model], timeout=1800, env=_ollama_env())
+            finally:
+                try:
+                    pull_marker.unlink(missing_ok=True)
+                except OSError:
+                    pass
             downloaded = _models()
             if not _has_local_model(downloaded, model):
                 raise RuntimeError(f"Ollama chua bao model {model} san sang sau khi tai.")

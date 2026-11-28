@@ -703,7 +703,24 @@ async function requestSuggestion(mode, provider = 'offline') {
       detectedLocalModel = await probeLiveOllamaModel();
     }
     const trackedLocalModel = useLocal ? detectedLocalModel : undefined;
-    if (useLocal && !trackedLocalModel) throw new Error(LOCAL_INSTALL_MESSAGE);
+    if (useLocal && !trackedLocalModel) {
+      if (process.env.USERPROFILE) {
+        const pullMarker = path.join(process.env.USERPROFILE, '.pylance-helper', 'pulling.json');
+        if (fs.existsSync(pullMarker)) {
+          try {
+            const info = parseJsonSafe(fs.readFileSync(pullMarker, 'utf8'));
+            if (info && typeof info.startedAt === 'number' && (Date.now() / 1000 - info.startedAt) < 1800) {
+              throw new Error(
+                `Ollama đang tải model ${info.model || ''} trong cửa sổ cài đặt — hãy đợi tải đủ 100% hiện [HOÀN TẤT] rồi bấm lại Alt+5 (trong lúc đợi dùng ngay Alt+1 hoặc Alt+2 giải Offline tức thì!).`
+              );
+            }
+          } catch (e) {
+            if (e instanceof Error && e.message.startsWith('Ollama đang tải model')) throw e;
+          }
+        }
+      }
+      throw new Error(LOCAL_INSTALL_MESSAGE);
+    }
     const requestReady = () => runtimeReady(runtime, requiresBase, trackedLocalModel);
     if (!requestReady()) throw new Error(INSTALL_MESSAGE);
 
