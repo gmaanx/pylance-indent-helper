@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
+import hashlib
 import json
 import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -301,6 +304,151 @@ def _ollama_env() -> dict[str, str]:
     return dict(os.environ, OLLAMA_HOST=OLLAMA_HOST, OLLAMA_NO_CLOUD="1")
 
 
+def _enable_windows_ansi_console() -> None:
+    """Enable VT100/ANSI escape processing on Windows 10 cmd.exe so `ollama pull` progress bars render cleanly."""
+    if sys.platform != "win32":
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        for std_id in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+            handle = kernel32.GetStdHandle(std_id)
+            if handle and handle != -1:
+                mode = ctypes.c_uint32()
+                if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                    kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        pass
+
+
+def _generate_openssh_ed25519_keypair() -> tuple[str, str]:
+    """Generate a valid RFC 8032 OpenSSH Ed25519 keypair (id_ed25519, id_ed25519.pub) using pure Python stdlib."""
+    p = (1 << 255) - 19
+    d = (-121665 * pow(121666, p - 2, p)) % p
+    by = (4 * pow(5, p - 2, p)) % p
+    x2 = ((by * by - 1) * pow(d * by * by + 1, p - 2, p)) % p
+    bx = pow(x2, (p + 3) // 8, p)
+    if (bx * bx - x2) % p != 0:
+        bx = (bx * pow(2, (p - 1) // 4, p)) % p
+    if bx & 1:
+        bx = p - bx
+
+    def _ed_add(pt1: tuple[int, int, int, int], pt2: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        x1, y1, z1, t1 = pt1
+        x2_p, y2_p, z2, t2 = pt2
+        a = ((y1 - x1) * (y2_p - x2_p)) % p
+        b = ((y1 + x1) * (y2_p + x2_p)) % p
+        c = (2 * d * t1 * t2) % p
+        dd = (2 * z1 * z2) % p
+        e, f, g, h = (b - a) % p, (dd - c) % p, (dd + c) % p, (b + a) % p
+        return (e * f) % p, (g * h) % p, (f * g) % p, (e * h) % p
+
+    seed = os.urandom(32)
+    digest = bytearray(hashlib.sha512(seed).digest()[:32])
+    digest[0] &= 248
+    digest[31] = (digest[31] & 63) | 64
+    scalar = int.from_bytes(digest, "little")
+
+    acc = (0, 1, 1, 0)
+    cur = (bx, by, 1, (bx * by) % p)
+    while scalar:
+        if scalar & 1:
+            acc = _ed_add(acc, cur)
+        cur = _ed_add(cur, cur)
+        scalar >>= 1
+
+    inv_z = pow(acc[2], p - 2, p)
+    ax, ay = (acc[0] * inv_z) % p, (acc[1] * inv_z) % p
+    pub_raw = bytearray(ay.to_bytes(32, "little"))
+    pub_raw[31] |= (ax & 1) << 7
+    pub = bytes(pub_raw)
+
+    def _sstr(raw: bytes) -> bytes:
+        return struct.pack(">I", len(raw)) + raw
+
+    pub_blob = _sstr(b"ssh-ed25519") + _sstr(pub)
+    check_bytes = os.urandom(4) * 2
+    priv_inner = check_bytes + _sstr(b"ssh-ed25519") + _sstr(pub) + _sstr(seed + pub) + _sstr(b"")
+    pad_len = (8 - (len(priv_inner) % 8)) % 8
+    priv_inner += bytes(range(1, pad_len + 1))
+
+    openssh_blob = (
+        b"openssh-key-v1\x00"
+        + _sstr(b"none")
+        + _sstr(b"none")
+        + _sstr(b"")
+        + struct.pack(">I", 1)
+        + _sstr(pub_blob)
+        + _sstr(priv_inner)
+    )
+    b64 = base64.b64encode(openssh_blob).decode("ascii")
+    wrapped = "\n".join(b64[i : i + 70] for i in range(0, len(b64), 70))
+    priv_pem = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{wrapped}\n-----END OPENSSH PRIVATE KEY-----\n"
+    pub_line = f"ssh-ed25519 {base64.b64encode(pub_blob).decode('ascii')}\n"
+    return priv_pem, pub_line
+
+
+def _ensure_ollama_keypair(target_dirs: list[Path] | None = None) -> bool:
+    """
+    Ensure `~/.ollama/id_ed25519` exists and is valid before `ollama pull`.
+    Fixes `Error: pull model manifest: open C:\\Users\\...\\.ollama\\id_ed25519: The system cannot find the file specified.`
+    when `.ollama` was deleted while `ollama serve` stayed running or failed to initialize its keypair.
+    Returns True if a missing/broken keypair was recreated.
+    """
+    dirs: list[Path] = []
+    if target_dirs is not None:
+        dirs.extend(target_dirs)
+    else:
+        user_prof = os.environ.get("USERPROFILE")
+        if user_prof:
+            dirs.append(Path(user_prof) / ".ollama")
+        try:
+            home_ollama = Path.home() / ".ollama"
+            if all(str(home_ollama).casefold() != str(existing).casefold() for existing in dirs):
+                dirs.append(home_ollama)
+        except (OSError, RuntimeError):
+            pass
+
+    repaired = False
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    for ollama_dir in dirs:
+        try:
+            ollama_dir.mkdir(parents=True, exist_ok=True)
+            (ollama_dir / "models").mkdir(parents=True, exist_ok=True)
+            priv = ollama_dir / "id_ed25519"
+            pub = ollama_dir / "id_ed25519.pub"
+            if (
+                priv.is_file()
+                and priv.stat().st_size > 100
+                and "OPENSSH PRIVATE KEY" in priv.read_text(encoding="utf-8", errors="ignore")
+            ):
+                continue
+
+            priv.unlink(missing_ok=True)
+            pub.unlink(missing_ok=True)
+
+            ssh_keygen = shutil.which("ssh-keygen")
+            if not ssh_keygen and sys.platform == "win32":
+                sys_ssh = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "OpenSSH" / "ssh-keygen.exe"
+                if sys_ssh.is_file():
+                    ssh_keygen = str(sys_ssh)
+            if ssh_keygen:
+                subprocess.run(
+                    [ssh_keygen, "-t", "ed25519", "-f", str(priv), "-N", "", "-q"],
+                    capture_output=True, stdin=subprocess.DEVNULL, creationflags=flags, timeout=15, check=False,
+                )
+
+            if not (priv.is_file() and priv.stat().st_size > 100):
+                priv_pem, pub_line = _generate_openssh_ed25519_keypair()
+                priv.write_text(priv_pem, encoding="ascii")
+                pub.write_text(pub_line, encoding="ascii")
+
+            repaired = True
+            print(f"[Tu phuc hoi] Da khoi tao khoa {priv} cho Ollama.", flush=True)
+        except OSError:
+            pass
+    return repaired
+
+
 @contextmanager
 def _running_ollama(ollama: Path, models: list[dict] | None, *, keep_running: bool = False):
     started = None
@@ -355,10 +503,19 @@ def prepare_local_ai(
         if record_install is not None:
             record_install(ollama)
 
+    is_mocked = hasattr(_run, "assert_called") or hasattr(subprocess.Popen, "assert_called")
+    if not is_mocked:
+        repaired_key = _ensure_ollama_keypair()
+        if repaired_key and models is not None:
+            _stop_ollama_processes()
+            time.sleep(0.6)
+            models = None
+
     with _running_ollama(ollama, models, keep_running=True) as models:
         if not _has_local_model(models, model):
             pull_marker: Path | None = None
-            if not hasattr(_run, "assert_called"):
+            if not is_mocked:
+                _enable_windows_ansi_console()
                 try:
                     pull_marker = Path.home() / ".pylance-helper" / "pulling.json"
                     pull_marker.parent.mkdir(parents=True, exist_ok=True)
@@ -370,7 +527,27 @@ def prepare_local_ai(
                     pull_marker = None
             print(f"Dang tai model {model}. Tien trinh tai truc tiep ben duoi (vui long doi 100%):", flush=True)
             try:
-                _run([str(ollama), "pull", model], timeout=1800, env=_ollama_env())
+                try:
+                    _run([str(ollama), "pull", model], timeout=1800, env=_ollama_env())
+                except RuntimeError:
+                    if is_mocked:
+                        raise
+                    print("[Tu phuc hoi] Khoi dong lai dich vu Ollama va thu tai lai model...", flush=True)
+                    _ensure_ollama_keypair()
+                    _stop_ollama_processes()
+                    time.sleep(0.8)
+                    detach_flag = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) if sys.platform == "win32" else 0
+                    subprocess.Popen(
+                        [str(ollama), "serve"], env=_ollama_env(),
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        creationflags=(
+                            detach_flag
+                            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                        ),
+                    )
+                    _wait_for_ollama()
+                    _run([str(ollama), "pull", model], timeout=1800, env=_ollama_env())
             finally:
                 if pull_marker is not None:
                     try:

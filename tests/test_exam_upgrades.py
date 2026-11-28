@@ -681,6 +681,39 @@ class ExamUpgradeTests(unittest.TestCase):
             self.assertEqual(res_err.returncode, 2, res_err.stdout + res_err.stderr)
             self.assertIn("Cai dat bao loi (ma 2)", res_err.stdout)
 
+    def test_ensure_ollama_keypair_ssh_keygen_and_pure_python(self):
+        import os
+        import shutil
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # 1. Pure-Python Ed25519 OpenSSH keypair fallback when ssh-keygen is unavailable
+            d_py = Path(tmp) / "ollama_pure"
+            with patch.object(local_ai.shutil, "which", return_value=None), patch.dict(
+                "os.environ", {"SystemRoot": str(Path(tmp) / "no_win")}
+            ):
+                repaired = local_ai._ensure_ollama_keypair([d_py])
+            self.assertTrue(repaired)
+            priv = d_py / "id_ed25519"
+            pub = d_py / "id_ed25519.pub"
+            self.assertTrue(priv.is_file())
+            self.assertIn("BEGIN OPENSSH PRIVATE KEY", priv.read_text(encoding="ascii"))
+            self.assertTrue(pub.read_text(encoding="ascii").startswith("ssh-ed25519 "))
+            # Second call is idempotent (returns False)
+            self.assertFalse(local_ai._ensure_ollama_keypair([d_py]))
+
+            # Cross-verify pure-Python private key with real OpenSSH ssh-keygen -y if available!
+            ssh_kg = shutil.which("ssh-keygen")
+            if ssh_kg and sys.platform == "win32":
+                user = os.environ.get("USERNAME", "")
+                if user:
+                    subprocess.run(
+                        ["icacls", str(priv), "/inheritance:r", "/grant:r", f"{user}:F"],
+                        capture_output=True, check=False,
+                    )
+                    derived = subprocess.check_output([ssh_kg, "-y", "-f", str(priv)], text=True).strip()
+                    self.assertEqual(derived, pub.read_text(encoding="ascii").strip())
+
 
 if __name__ == "__main__":
     unittest.main()
