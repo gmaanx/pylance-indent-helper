@@ -19,6 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.dont_write_bytecode = True
 _SCRIPT_ROOT = str(Path(__file__).resolve().parent)
 if _SCRIPT_ROOT not in sys.path:
     sys.path.insert(0, _SCRIPT_ROOT)
@@ -254,6 +255,20 @@ def _unregister_extension_from_ide(ide_ext_root: Path) -> None:
         if len(filtered) != len(entries):
             manifest_file.write_text(json.dumps(filtered, ensure_ascii=False), encoding="utf-8")
 
+    obsolete_file = ide_ext_root / ".obsolete"
+    if obsolete_file.is_file():
+        try:
+            obs = json.loads(obsolete_file.read_text(encoding="utf-8-sig"))
+            if isinstance(obs, dict):
+                cleaned_obs = {k: v for k, v in obs.items() if not str(k).casefold().startswith(EXT_ID)}
+                if len(cleaned_obs) != len(obs):
+                    if cleaned_obs:
+                        obsolete_file.write_text(json.dumps(cleaned_obs, ensure_ascii=False), encoding="utf-8")
+                    else:
+                        obsolete_file.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+
 
 def stop_daemon_processes() -> None:
     """Dừng đúng daemon của công cụ, kể cả bản chạy bằng python.exe."""
@@ -384,6 +399,39 @@ def _scrub_all_ide_extension_dirs() -> None:
                         item.unlink(missing_ok=True)
                     except OSError:
                         pass
+            global_st = Path(appdata) / app_ide / "User" / "globalStorage" / EXT_ID
+            if global_st.exists():
+                shutil.rmtree(global_st, ignore_errors=True)
+
+
+def _scrub_dot_pylance_traces() -> None:
+    """Remove ~/.pylance-helper and any .pylance* files/folders in user home or temp."""
+    home_candidates: list[Path] = []
+    try:
+        home_candidates.append(Path.home())
+    except (OSError, RuntimeError):
+        pass
+    if "unittest" not in sys.modules and os.environ.get("USERPROFILE"):
+        up = Path(os.environ["USERPROFILE"])
+        if all(str(up).casefold() != str(h).casefold() for h in home_candidates):
+            home_candidates.append(up)
+
+    for h_dir in home_candidates:
+        try:
+            mirror = h_dir / ".pylance-helper"
+            if mirror.exists():
+                shutil.rmtree(mirror, ignore_errors=True)
+            if h_dir.is_dir():
+                for item in h_dir.glob(".pylance*"):
+                    try:
+                        if item.is_dir():
+                            shutil.rmtree(item, ignore_errors=True)
+                        else:
+                            item.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
 
 
 def _scrub_temp_and_pth_traces() -> None:
@@ -395,13 +443,83 @@ def _scrub_temp_and_pth_traces() -> None:
         pass
     try:
         tmp_dir = Path(tempfile.gettempdir())
-        for pattern in ("pylance_lint_*.py", "pylance_uninst_*.tmp"):
+        for pattern in ("pylance_lint_*.py", "pylance_uninst_*.tmp", "pylance_go_ollama_*.tmp", "pylance_hf_*"):
             for item in tmp_dir.glob(pattern):
                 try:
-                    item.unlink(missing_ok=True)
+                    if item.is_dir():
+                        shutil.rmtree(item, ignore_errors=True)
+                    else:
+                        item.unlink(missing_ok=True)
                 except OSError:
                     pass
     except Exception:
+        pass
+    _scrub_dot_pylance_traces()
+
+
+def _stop_runtime_python_processes(root: Path) -> None:
+    """Kill any lingering python.exe/pythonw.exe running out of PylanceHelper/.pylance-helper (excluding self)."""
+    if sys.platform != "win32" or "unittest" in sys.modules:
+        return
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    ps_kill = (
+        f"$myPid = {os.getpid()}; "
+        "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { "
+        "$_.ProcessId -ne $myPid -and $_.Name -match '^python' -and ("
+        "$_.ExecutablePath -match 'PylanceHelper|\\.pylance-helper' -or "
+        "$_.CommandLine -match 'PylanceHelper|\\.pylance-helper'"
+        ") } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_kill],
+        capture_output=True, stdin=subprocess.DEVNULL, creationflags=flags, timeout=10, check=False,
+    )
+
+
+def _schedule_post_exit_sweep(root: Path) -> None:
+    """Spawn a 1-second delayed background cmd sweep so even locked runtime/lock files vanish after python.exe exits."""
+    if sys.platform != "win32" or "unittest" in sys.modules:
+        return
+    targets = [
+        str(root),
+        str(root.parent / "PylanceHelper.lock"),
+        str(root.parent / "PylanceHelper.pid"),
+        str(root.parent.parent / "PylanceHelperLocalAI"),
+        str(root.parent.parent / "PylanceHelperLogs"),
+    ]
+    try:
+        targets.append(str(_home_mirror_dir()))
+    except (OSError, RuntimeError):
+        pass
+    if os.environ.get("USERPROFILE"):
+        targets.append(str(Path(os.environ["USERPROFILE"]) / ".pylance-helper"))
+        targets.append(str(Path(os.environ["USERPROFILE"]) / ".ollama"))
+    if os.environ.get("LOCALAPPDATA"):
+        targets.append(str(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Ollama"))
+        targets.append(str(Path(os.environ["LOCALAPPDATA"]) / "Ollama"))
+
+    rm_cmds = []
+    for t in targets:
+        if '"' not in t:
+            if t.endswith((".lock", ".pid")):
+                rm_cmds.append(f'del /f /q "{t}" >nul 2>&1')
+            else:
+                rm_cmds.append(f'if exist "{t}" rmdir /s /q "{t}" >nul 2>&1')
+    if not rm_cmds:
+        return
+    joined = " & ".join(rm_cmds)
+    flags = (
+        getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    )
+    try:
+        subprocess.Popen(
+            f'cmd.exe /d /s /c "ping -n 2 127.0.0.1 >nul & {joined}"',
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+    except OSError:
         pass
 
 
@@ -450,37 +568,49 @@ def uninstall_everything(
                         stop_daemon_processes()
                     except Exception:
                         pass
+                    _stop_runtime_python_processes(root)
                     _scrub_all_ide_extension_dirs()
                     _scrub_temp_and_pth_traces()
             elif uninstall_legacy(root):
                 return False
             elif remove_all:
+                _stop_runtime_python_processes(root)
                 _scrub_all_ide_extension_dirs()
                 _scrub_temp_and_pth_traces()
-            _remove_tree(root, root.parent)
-            if remove_all:
-                for extra_dir in (
-                    root.parent.parent / "PylanceHelperLocalAI",
-                    root.parent.parent / "PylanceHelperLogs",
-                    _home_mirror_dir(),
-                ):
-                    if extra_dir.exists():
-                        shutil.rmtree(extra_dir, ignore_errors=True)
-                local_env = os.environ.get("LOCALAPPDATA")
-                if local_env:
-                    pkgs_dir = Path(local_env) / "Packages"
-                    if pkgs_dir.is_dir():
-                        for pkg_dir in pkgs_dir.glob("PythonSoftwareFoundation.Python.*"):
-                            for rel in ("Programs/PylanceHelper", "PylanceHelperLocalAI"):
-                                target_v = pkg_dir / "LocalCache" / "Local" / rel
-                                if target_v.exists():
-                                    shutil.rmtree(target_v, ignore_errors=True)
-        if remove_all:
-            lock_file = root.parent / "PylanceHelper.lock"
             try:
-                lock_file.unlink(missing_ok=True)
-            except OSError:
-                pass
+                _remove_tree(root, root.parent)
+            finally:
+                if remove_all:
+                    _scrub_dot_pylance_traces()
+                    for extra_dir in (
+                        root.parent.parent / "PylanceHelperLocalAI",
+                        root.parent.parent / "PylanceHelperLogs",
+                        _home_mirror_dir(),
+                    ):
+                        if extra_dir.exists():
+                            shutil.rmtree(extra_dir, ignore_errors=True)
+                    local_env = os.environ.get("LOCALAPPDATA")
+                    if local_env:
+                        pkgs_dir = Path(local_env) / "Packages"
+                        if pkgs_dir.is_dir():
+                            for pkg_dir in pkgs_dir.glob("PythonSoftwareFoundation.Python.*"):
+                                for rel in ("Programs/PylanceHelper", "PylanceHelperLocalAI", "PylanceHelperLogs"):
+                                    target_v = pkg_dir / "LocalCache" / "Local" / rel
+                                    if target_v.exists():
+                                        shutil.rmtree(target_v, ignore_errors=True)
+                else:
+                    try:
+                        if _home_mirror_dir().exists():
+                            (_home_mirror_dir() / "runtime.json").unlink(missing_ok=True)
+                    except (OSError, RuntimeError):
+                        pass
+        if remove_all:
+            for lock_f in (root.parent / "PylanceHelper.lock", root.parent / "PylanceHelper.pid"):
+                try:
+                    lock_f.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            _schedule_post_exit_sweep(root)
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"[LOI] Go cai dat chua hoan tat. {exc}", file=sys.stderr)
         return False

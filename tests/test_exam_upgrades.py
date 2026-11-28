@@ -782,6 +782,45 @@ class ExamUpgradeTests(unittest.TestCase):
             self.assertFalse(sm_ollama_dir.exists())
             self.assertFalse((onedrive / "Desktop" / "Ollama.lnk").exists())
 
+    def test_unified_uninstall_wipes_dot_pylance_and_obsolete_traces(self):
+        import go_cai_dat as uninst
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            local = root / "local"
+            roaming = root / "roaming"
+            install_dir = local / "Programs" / "PylanceHelper"
+            install_dir.mkdir(parents=True)
+            (install_dir / "runtime.json").write_text(json.dumps({"baseEnabled": True, "ides": []}), encoding="utf-8")
+
+            # Create .pylance-helper, .pylance_cache.json, .vscode/.obsolete, and globalStorage traces
+            (home / ".pylance-helper").mkdir(parents=True)
+            (home / ".pylance-helper" / "credentials.json").write_text("{}", encoding="utf-8")
+            (home / ".pylance_cache.json").write_text("{}", encoding="utf-8")
+            ext_root = home / ".vscode" / "extensions"
+            ext_root.mkdir(parents=True)
+            (ext_root / ".obsolete").write_text(
+                json.dumps({"ms-python-tools.pylance-indent-helper-2.1.1": True, "other.ext-1.0.0": True}),
+                encoding="utf-8",
+            )
+            gs_dir = roaming / "Code" / "User" / "globalStorage" / uninst.EXT_ID
+            gs_dir.mkdir(parents=True)
+            (gs_dir / "state.vscdb").write_text("db", encoding="utf-8")
+
+            with patch.dict("os.environ", {"LOCALAPPDATA": str(local), "APPDATA": str(roaming), "USERPROFILE": str(home)}), \
+                    patch.object(Path, "home", return_value=home), \
+                    patch.object(local_ai, "uninstall_local_ai") as rm_ollama, \
+                    patch.object(uninst, "stop_daemon_processes"):
+                ok = uninst.uninstall_everything(remove_all=True)
+
+            self.assertTrue(ok)
+            rm_ollama.assert_called_once_with(remove_configured_model=True, remove_user_ollama=True, purge_all=True)
+            self.assertFalse((home / ".pylance-helper").exists())
+            self.assertFalse((home / ".pylance_cache.json").exists())
+            self.assertFalse(gs_dir.exists())
+            self.assertEqual(json.loads((ext_root / ".obsolete").read_text(encoding="utf-8")), {"other.ext-1.0.0": True})
+
 
 if __name__ == "__main__":
     unittest.main()

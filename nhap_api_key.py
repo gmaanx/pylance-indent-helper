@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import argparse
 import getpass
+from pathlib import Path
 import sys
 import warnings
+
+_SCRIPT_ROOT = str(Path(__file__).resolve().parent)
+if _SCRIPT_ROOT not in sys.path:
+    sys.path.insert(0, _SCRIPT_ROOT)
 
 from core_engine.brain_router import call_tier1_cloud_llm
 from core_engine.config_manager import (

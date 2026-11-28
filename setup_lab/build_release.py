@@ -17,8 +17,6 @@ INCLUDE = (
     "go_cai_dat.py",
     "go_cai_dat.bat",
     "go_cai_dat.vbs",
-    "go_ollama.bat",
-    "go_ollama.vbs",
     "nhap_api_key.py",
     "nhap_api_key.bat",
     "setup_lab/deploy_usb.bat",

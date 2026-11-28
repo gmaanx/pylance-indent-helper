@@ -62,8 +62,17 @@ function deobfuscateKey(encoded) {
 
 function loadSavedCredentials(runtime) {
   if (!runtime?.root) return undefined;
-  const credFile = path.join(runtime.root, 'credentials.json');
-  if (!fs.existsSync(credFile)) return undefined;
+  const credFiles = [path.join(runtime.root, 'credentials.json')];
+  if (process.env.LOCALAPPDATA) {
+    const stdCred = path.join(process.env.LOCALAPPDATA, 'Programs', 'PylanceHelper', 'credentials.json');
+    if (!credFiles.includes(stdCred)) credFiles.push(stdCred);
+  }
+  if (process.env.USERPROFILE && runtime.root.toLowerCase().startsWith(process.env.USERPROFILE.toLowerCase())) {
+    const mirrorCred = path.join(process.env.USERPROFILE, '.pylance-helper', 'credentials.json');
+    if (!credFiles.includes(mirrorCred)) credFiles.push(mirrorCred);
+  }
+  const credFile = credFiles.find((f) => fs.existsSync(f));
+  if (!credFile) return undefined;
   try {
     const parsed = JSON.parse(fs.readFileSync(credFile, 'utf8'));
     if (!parsed || typeof parsed.encoded !== 'object' || !parsed.encoded) return undefined;
@@ -263,7 +272,7 @@ function runProcess(executable, args, cwd, input, signal) {
     const child = spawn(executable, args, {
       cwd,
       windowsHide: true,
-      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' }
     });
     let stdout = '';
     let settled = false;

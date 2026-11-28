@@ -250,12 +250,12 @@ Dùng `.\setup_ollama.bat --check` để kiểm tra model. Chạy lại `.\setup
 
 Cập nhật bằng cách chạy lại setup từ bản mới rồi chọn **Reload Window**. Nếu dùng Git, chạy `git pull --ff-only` trước khi chạy setup. Nếu dùng profile đầy đủ, thêm `--profile full` khi nâng cấp. Nếu đã cài ở hai IDE, cập nhật cho từng IDE.
 
-| Thành phần | Cài đặt | Gỡ trong terminal | Gỡ khi nhấp đúp |
+| Thành phần | Cài đặt | Gỡ toàn bộ hệ thống (Terminal) | Gỡ ngầm 1 chạm |
 | --- | --- | --- | --- |
 | Offline + API | [setup_nhanh.bat](setup_nhanh.bat) | [go_cai_dat.bat](go_cai_dat.bat) | [go_cai_dat.vbs](go_cai_dat.vbs) |
-| Ollama | [setup_ollama.bat](setup_ollama.bat) | [go_ollama.bat](go_ollama.bat) | [go_ollama.vbs](go_ollama.vbs) |
+| Trọn bộ + Ollama | [setup_ollama.bat](setup_ollama.bat) | [go_cai_dat.bat](go_cai_dat.bat) | [go_cai_dat.vbs](go_cai_dat.vbs) |
 
-File `.vbs` chạy lệnh gỡ ở nền khi nhấp đúp. **Alt+0** (và `go_cai_dat.bat` không tham số) thực hiện **xóa sạch dấu vết 100%**: gỡ toàn bộ `Alt+1` đến `Alt+6`, xóa Extension khỏi cả VS Code và Antigravity, dừng toàn bộ tiến trình Ollama, chạy uninstaller ngầm và xóa triệt để `Programs\Ollama`, `%LOCALAPPDATA%\Ollama`, `~/.ollama`, `PylanceHelper`, `PylanceHelperLocalAI`, `PylanceHelperLogs`, shortcut Start Menu/Startup cùng khóa Registry `Run`/`Path`, sau đó **tự động `Reload Window`** để xóa sạch phím tắt khỏi bộ nhớ IDE ngay lập tức. `go_ollama.bat` dùng khi chỉ muốn gỡ nhẹ riêng cấu hình Ollama.
+File `.vbs` chạy lệnh gỡ ở nền khi nhấp đúp. **Alt+0** (và `go_cai_dat.bat`) thực hiện **xóa sạch dấu vết 100% toàn bộ hệ thống trong 1 lệnh duy nhất**: gỡ toàn bộ `Alt+1` đến `Alt+6`, xóa Extension khỏi cả VS Code và Antigravity, dừng toàn bộ tiến trình Ollama, xóa triệt để `Programs\Ollama`, `%LOCALAPPDATA%\Ollama`, `~/.ollama`, `~/.pylance-helper`, `PylanceHelper`, `PylanceHelperLocalAI`, `PylanceHelperLogs`, `credentials.json`, shortcut Desktop/Start Menu/Startup cùng khóa Registry `Run`/`Path`/`Uninstall`, sau đó **tự động `Reload Window`** để xóa sạch phím tắt khỏi bộ nhớ IDE ngay lập tức.
 
 | Hiện tượng | Cách xử lý |
 | --- | --- |

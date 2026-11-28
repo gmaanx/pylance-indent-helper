@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import re
+import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -68,12 +69,27 @@ def save_encrypted_credential(provider: str, key: str, install_dir: Path | None 
             existing = {}
     existing[provider] = obfuscate_str(cleaned)
     payload = {"activeProvider": provider, "encoded": existing}
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+    target.write_text(serialized, encoding="utf-8")
+    if install_dir is None and "unittest" not in sys.modules:
+        try:
+            mirror_cred = Path.home() / ".pylance-helper" / "credentials.json"
+            mirror_cred.parent.mkdir(parents=True, exist_ok=True)
+            mirror_cred.write_text(serialized, encoding="utf-8")
+        except (OSError, RuntimeError):
+            pass
     return target
 
 
 def load_encrypted_credentials(install_dir: Path | None = None) -> dict[str, str]:
     target = _credentials_file(install_dir)
+    if (target is None or not target.is_file()) and install_dir is None and "unittest" not in sys.modules:
+        try:
+            alt = Path.home() / ".pylance-helper" / "credentials.json"
+            if alt.is_file():
+                target = alt
+        except (OSError, RuntimeError):
+            pass
     if target is None or not target.is_file():
         return {}
     try:
@@ -105,6 +121,11 @@ def clear_encrypted_credentials(install_dir: Path | None = None) -> None:
         try:
             target.unlink(missing_ok=True)
         except OSError:
+            pass
+    if install_dir is None and "unittest" not in sys.modules:
+        try:
+            (Path.home() / ".pylance-helper" / "credentials.json").unlink(missing_ok=True)
+        except (OSError, RuntimeError):
             pass
 
 
