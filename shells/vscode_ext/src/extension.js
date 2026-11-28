@@ -40,7 +40,12 @@ const STATUS_LABELS = {
 let activeOperation;
 let uninstalling;
 let disabled = false;
+let probedSessionLocalModel;
 const sessionCredentials = new Map();
+
+function parseJsonSafe(rawText) {
+  return JSON.parse(String(rawText).replace(/^\uFEFF/, ''));
+}
 
 function deobfuscateKey(encoded) {
   try {
@@ -90,35 +95,148 @@ function getSessionCredentialsObject() {
 }
 
 function getRuntime(requiresBase = false, installMessage = INSTALL_MESSAGE) {
-  if (!process.env.LOCALAPPDATA) {
+  if (!process.env.LOCALAPPDATA && !process.env.USERPROFILE) {
     throw new Error(installMessage);
   }
-  const root = path.join(process.env.LOCALAPPDATA, 'Programs', 'PylanceHelper');
+  const candidateRoots = [];
+  if (process.env.LOCALAPPDATA) {
+    candidateRoots.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'PylanceHelper'));
+  }
+  if (process.env.USERPROFILE) {
+    candidateRoots.push(path.join(process.env.USERPROFILE, '.pylance-helper', 'engine'));
+    candidateRoots.push(path.join(process.env.USERPROFILE, '.pylance-helper'));
+    candidateRoots.push(path.join(process.env.USERPROFILE, 'AppData', 'Local', 'Programs', 'PylanceHelper'));
+  }
   let record;
-  try {
-    record = JSON.parse(fs.readFileSync(path.join(root, 'runtime.json'), 'utf8'));
-  } catch {
-    throw new Error(installMessage);
+  let chosenRoot;
+  for (const root of candidateRoots) {
+    const rtFile = path.join(root, 'runtime.json');
+    if (!fs.existsSync(rtFile)) continue;
+    try {
+      const parsed = parseJsonSafe(fs.readFileSync(rtFile, 'utf8'));
+      if (parsed && typeof parsed.engineRoot === 'string' && path.isAbsolute(parsed.engineRoot) &&
+          typeof parsed.python === 'string' && path.isAbsolute(parsed.python)) {
+        record = parsed;
+        chosenRoot = path.dirname(parsed.engineRoot);
+        if (!fs.existsSync(path.join(chosenRoot, 'runtime.json'))) chosenRoot = root;
+        break;
+      }
+    } catch {
+      // try next candidate
+    }
   }
-  if (!record || typeof record.engineRoot !== 'string' || !path.isAbsolute(record.engineRoot) ||
-      typeof record.python !== 'string' || !path.isAbsolute(record.python)) {
+  if (!record || !chosenRoot) {
     throw new Error(installMessage);
   }
   if (requiresBase && record.baseEnabled === false) throw new Error(BASE_INSTALL_MESSAGE);
-  return { ...record, root };
+  return { ...record, root: chosenRoot };
 }
 
 function getLocalModel(runtime) {
-  const config = path.join(process.env.LOCALAPPDATA, 'PylanceHelperLocalAI', 'runtime.json');
+  const candidates = [];
+  if (process.env.LOCALAPPDATA) {
+    candidates.push(path.join(process.env.LOCALAPPDATA, 'PylanceHelperLocalAI', 'runtime.json'));
+  }
+  if (process.env.USERPROFILE) {
+    candidates.push(path.join(process.env.USERPROFILE, '.pylance-helper', 'local_ai.json'));
+    candidates.push(path.join(process.env.USERPROFILE, 'AppData', 'Local', 'PylanceHelperLocalAI', 'runtime.json'));
+  }
   let model = runtime.baseEnabled === undefined ? runtime.localModel : undefined;
-  if (fs.existsSync(config)) {
-    try {
-      model = JSON.parse(fs.readFileSync(config, 'utf8')).localModel;
-    } catch {
-      return undefined;
+  for (const config of candidates) {
+    if (fs.existsSync(config)) {
+      try {
+        const parsed = parseJsonSafe(fs.readFileSync(config, 'utf8'));
+        if (typeof parsed?.localModel === 'string' && parsed.localModel.trim()) {
+          model = parsed.localModel;
+          break;
+        }
+        return undefined;
+      } catch {
+        return undefined;
+      }
     }
   }
-  return typeof model === 'string' && model.trim() ? model : undefined;
+  if (typeof model === 'string' && model.trim()) return model.trim();
+  if (process.env.USERPROFILE && probedSessionLocalModel) return probedSessionLocalModel;
+  return undefined;
+}
+
+function fetchLiveOllamaModelOnce(timeoutMs = 900) {
+  return new Promise((resolve) => {
+    let httpMod;
+    try {
+      httpMod = require('node:http');
+    } catch {
+      resolve(undefined);
+      return;
+    }
+    const req = httpMod.get('http://127.0.0.1:11434/api/tags', { timeout: timeoutMs }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        resolve(undefined);
+        return;
+      }
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => {
+        if (raw.length < 512000) raw += chunk;
+      });
+      res.on('end', () => {
+        try {
+          const data = parseJsonSafe(raw);
+          const list = Array.isArray(data?.models) ? data.models : [];
+          const names = list
+            .filter((m) => m && !m.remote_host && !m.remote_model)
+            .map((m) => String(m.name || m.model || '').trim())
+            .filter((n) => n && !n.toLowerCase().endsWith('-cloud') && !n.toLowerCase().endsWith(':cloud') && !n.toLowerCase().includes('@cloud'));
+          const preferred = names.find((n) => n.toLowerCase().includes('qwen2.5-coder'))
+            || names.find((n) => n.toLowerCase().includes('coder'))
+            || names[0];
+          resolve(preferred || undefined);
+        } catch {
+          resolve(undefined);
+        }
+      });
+    });
+    req.on('timeout', () => { req.destroy(); resolve(undefined); });
+    req.on('error', () => resolve(undefined));
+  });
+}
+
+async function probeLiveOllamaModel() {
+  if (!process.env.USERPROFILE) return undefined;
+  let found = await fetchLiveOllamaModelOnce(900);
+  if (!found) {
+    const exeCandidates = [
+      process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'Ollama', 'ollama.exe') : '',
+      path.join(process.env.USERPROFILE, 'AppData', 'Local', 'Programs', 'Ollama', 'ollama.exe'),
+      'C:\\Program Files\\Ollama\\ollama.exe',
+      'C:\\Program Files (x86)\\Ollama\\ollama.exe'
+    ].filter(Boolean);
+    const ollamaExe = exeCandidates.find((p) => fs.existsSync(p));
+    if (ollamaExe) {
+      try {
+        const bg = spawn(ollamaExe, ['serve'], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+          env: { ...process.env, OLLAMA_HOST: '127.0.0.1:11434', OLLAMA_NO_CLOUD: '1' }
+        });
+        bg.unref?.();
+        for (let i = 0; i < 8; i++) {
+          await new Promise((r) => setTimeout(r, 400));
+          found = await fetchLiveOllamaModelOnce(700);
+          if (found) break;
+        }
+      } catch {
+        // ignore spawn errors
+      }
+    }
+  }
+  if (found) {
+    probedSessionLocalModel = found;
+  }
+  return found;
 }
 
 function runtimeReady(runtime, requiresBase = true, localModel) {
@@ -580,7 +698,10 @@ async function requestSuggestion(mode, provider = 'offline') {
   const { signal } = operation.controller;
   try {
     const runtime = getRuntime(requiresBase, useLocal ? LOCAL_INSTALL_MESSAGE : INSTALL_MESSAGE);
-    const detectedLocalModel = getLocalModel(runtime);
+    let detectedLocalModel = getLocalModel(runtime);
+    if (!detectedLocalModel && (useLocal || isAutoPilot)) {
+      detectedLocalModel = await probeLiveOllamaModel();
+    }
     const trackedLocalModel = useLocal ? detectedLocalModel : undefined;
     if (useLocal && !trackedLocalModel) throw new Error(LOCAL_INSTALL_MESSAGE);
     const requestReady = () => runtimeReady(runtime, requiresBase, trackedLocalModel);
@@ -729,6 +850,7 @@ async function uninstallAllComponents() {
     await operation?.done;
     if (disabled) return;
     sessionCredentials.clear();
+    probedSessionLocalModel = undefined;
     const result = await runProcess(runtime.uninstallPython, [script, '--all'], os.tmpdir());
     if (result.code !== 0) {
       throw new Error('Gỡ toàn bộ chưa hoàn tất. Chạy go_cai_dat.bat --all để xem lỗi chi tiết.');
@@ -745,6 +867,7 @@ async function uninstallAllComponents() {
 
 function activate(context) {
   disabled = false;
+  probedSessionLocalModel = undefined;
   context.subscriptions.push(
     vscode.commands.registerCommand(PREFIX + 'instantFormat', () => requestSuggestion('instant', 'offline')),
     vscode.commands.registerCommand(PREFIX + 'deepFormat', () => requestSuggestion('full', 'auto')),

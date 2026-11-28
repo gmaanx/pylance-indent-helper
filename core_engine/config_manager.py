@@ -146,13 +146,21 @@ class ConfigManager:
             self._load_models(install_dir / "models.json")
             runtime = self._read_object(install_dir / "runtime.json")
             self._set_model("local_model", runtime.get("localModel"))
+            # Check unvirtualized ~/.pylance-helper mirror if under real user home
+            try:
+                home = Path.home().resolve()
+                if str(local_root.resolve()).casefold().startswith(str(home).casefold()):
+                    mirror_local = self._read_object(home / ".pylance-helper" / "local_ai.json")
+                    self._set_model("local_model", mirror_local.get("localModel"))
+            except OSError:
+                pass
             local_runtime = self._read_object(local_root / "PylanceHelperLocalAI" / "runtime.json")
             self._set_model("local_model", local_runtime.get("localModel"))
 
     @staticmethod
     def _read_object(config_file: Path) -> dict[str, Any]:
         try:
-            models = json.loads(config_file.read_text(encoding="utf-8"))
+            models = json.loads(config_file.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return {}
         return models if isinstance(models, dict) else {}

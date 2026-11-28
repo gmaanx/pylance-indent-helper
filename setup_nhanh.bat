@@ -5,4 +5,12 @@ if "%~1"=="" (
 ) else (
     call "%~dp0setup_lab\run_python.bat" "%~dp0setup.py" %*
 )
-exit /b %ERRORLEVEL%
+set "ERR=%ERRORLEVEL%"
+echo %CMDCMDLINE% | findstr /i /c:"/c """"" >nul && (
+    echo.
+    if "%ERR%"=="0" (
+        echo [HOAN TAT] Neu VS Code dang mo san, hay bam Ctrl+Shift+P -^> Reload Window!
+    )
+    pause
+)
+exit /b %ERR%

@@ -592,6 +592,24 @@ class ExamUpgradeTests(unittest.TestCase):
         self.assertEqual(opts["num_ctx"], 2048)
         self.assertLessEqual(opts["num_thread"], 6)
 
+    def test_school_pc_winget_fallback_and_msix_escape(self):
+        import go_cai_dat
+
+        # 1. When winget.exe is absent on school Windows LTSC/Education, falls back to direct HTTPS installer
+        with patch.object(local_ai.shutil, "which", return_value=None), patch.object(
+            local_ai, "_download_and_install_ollama_direct", return_value=Path("C:/Ollama/ollama.exe")
+        ) as direct_dl:
+            exe = local_ai._install_ollama()
+        self.assertEqual(exe, Path("C:/Ollama/ollama.exe"))
+        direct_dl.assert_called_once()
+
+        # 2. MSIX Microsoft Store Python escapes AppData virtualization into ~/.pylance-helper/engine
+        home = Path.home().resolve()
+        with patch.object(go_cai_dat, "_is_msix_python", return_value=True), patch.dict(
+            "os.environ", {"LOCALAPPDATA": str(home / "AppData" / "Local")}
+        ):
+            self.assertEqual(go_cai_dat.install_root(), home / ".pylance-helper" / "engine")
+
 
 if __name__ == "__main__":
     unittest.main()

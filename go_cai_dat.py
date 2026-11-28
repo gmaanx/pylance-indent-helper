@@ -23,11 +23,25 @@ EXT_ID = "ms-python-tools.pylance-indent-helper"
 EXT_FOLDER_NAME = EXT_ID + "-1.0.0"
 
 
+def _is_msix_python() -> bool:
+    exes = (sys.executable or "", getattr(sys, "_base_executable", "") or "")
+    return any("WindowsApps" in p or "PythonSoftwareFoundation.Python." in p for p in exes)
+
+
+def _home_mirror_dir() -> Path:
+    return Path.home() / ".pylance-helper"
+
+
 def install_root() -> Path:
     local = os.getenv("LOCALAPPDATA")
     if not local or not Path(local).is_absolute():
         raise RuntimeError("Khong tim thay thu muc LOCALAPPDATA cua nguoi dung.")
-    parent = (Path(local) / "Programs").resolve()
+    local_path = Path(local).resolve()
+    home = Path.home().resolve()
+    # Escape Windows Store Python MSIX AppData virtualization so Win32 VS Code sees exact NTFS paths
+    if _is_msix_python() and str(local_path).casefold().startswith(str(home).casefold()):
+        return _home_mirror_dir() / "engine"
+    parent = (local_path / "Programs").resolve()
     root = parent / "PylanceHelper"
     if root.resolve() != root:
         raise RuntimeError(f"Thu muc cai dat tro sang dia chi khac: {root}")
@@ -77,6 +91,15 @@ def save_runtime(root: Path, config: dict) -> None:
         staging.replace(root / "runtime.json")
     finally:
         staging.unlink(missing_ok=True)
+    # Mirror runtime pointer into unvirtualized ~/.pylance-helper when installing under real user profile
+    try:
+        home = Path.home().resolve()
+        if str(root.resolve()).casefold().startswith(str(home).casefold()):
+            mirror_dir = _home_mirror_dir()
+            mirror_dir.mkdir(parents=True, exist_ok=True)
+            (mirror_dir / "runtime.json").write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def copy_runtime_files(source: Path, target: Path) -> None:
@@ -290,7 +313,7 @@ def _remove_local_ai_for_full_uninstall(root: Path) -> None:
 
 
 def _scrub_all_ide_extension_dirs() -> None:
-    for ide_name in (".vscode", ".antigravity-ide", ".antigravity", ".cursor", ".windsurf"):
+    for ide_name in (".vscode", ".vscode-insiders", ".antigravity-ide", ".antigravity", ".cursor", ".windsurf", ".vscodium"):
         ext_root = Path.home() / ide_name / "extensions"
         if ext_root.is_dir():
             try:
@@ -299,7 +322,7 @@ def _scrub_all_ide_extension_dirs() -> None:
                 pass
     appdata = os.environ.get("APPDATA")
     if appdata:
-        for app_ide in ("Code", "Antigravity", "Cursor", "Windsurf"):
+        for app_ide in ("Code", "Code - Insiders", "Antigravity", "Cursor", "Windsurf", "VSCodium"):
             cached = Path(appdata) / app_ide / "CachedExtensionVSIXs"
             if cached.is_dir():
                 for item in cached.glob("*pylance-indent-helper*"):
@@ -385,9 +408,19 @@ def uninstall_everything(
                 for extra_dir in (
                     root.parent.parent / "PylanceHelperLocalAI",
                     root.parent.parent / "PylanceHelperLogs",
+                    _home_mirror_dir(),
                 ):
                     if extra_dir.exists():
                         shutil.rmtree(extra_dir, ignore_errors=True)
+                local_env = os.environ.get("LOCALAPPDATA")
+                if local_env:
+                    pkgs_dir = Path(local_env) / "Packages"
+                    if pkgs_dir.is_dir():
+                        for pkg_dir in pkgs_dir.glob("PythonSoftwareFoundation.Python.*"):
+                            for rel in ("Programs/PylanceHelper", "PylanceHelperLocalAI"):
+                                target_v = pkg_dir / "LocalCache" / "Local" / rel
+                                if target_v.exists():
+                                    shutil.rmtree(target_v, ignore_errors=True)
         if remove_all:
             lock_file = root.parent / "PylanceHelper.lock"
             try:

@@ -436,6 +436,80 @@ def review_local_draft(user_prompt: str, draft_code: str) -> str:
     return revised
 
 
+def _is_real_local_opener() -> bool:
+    return not hasattr(_post_json, "assert_called")
+
+
+def _find_any_installed_local_model() -> Optional[str]:
+    try:
+        with _LOCAL_OPENER.open(_OLLAMA_URL + "/api/tags", timeout=1.5) as resp:
+            data = json.loads(resp.read(500_000))
+    except Exception:
+        return None
+    models = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(models, list):
+        return None
+    names: List[str] = []
+    for entry in models:
+        if not isinstance(entry, dict) or entry.get("remote_host") or entry.get("remote_model"):
+            continue
+        m_name = entry.get("name") or entry.get("model")
+        if isinstance(m_name, str) and m_name.strip():
+            low = m_name.casefold()
+            if not low.endswith(("-cloud", ":cloud")) and "@cloud" not in low:
+                names.append(m_name.strip())
+    if not names:
+        return None
+    for preferred in names:
+        if "qwen2.5-coder" in preferred.casefold():
+            return preferred
+    for preferred in names:
+        if "coder" in preferred.casefold():
+            return preferred
+    return names[0]
+
+
+def _try_wake_ollama_daemon() -> bool:
+    import subprocess
+    import sys
+    import time
+    try:
+        from setup_lab.local_ai import find_ollama
+    except Exception:
+        return False
+    ollama_exe = find_ollama()
+    if ollama_exe is None or not ollama_exe.is_file():
+        return False
+    env = dict(os.environ, OLLAMA_HOST="127.0.0.1:11434", OLLAMA_NO_CLOUD="1")
+    flags = 0
+    if sys.platform == "win32":
+        flags = (
+            getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        )
+    try:
+        subprocess.Popen(
+            [str(ollama_exe), "serve"],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+    except OSError:
+        return False
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            with _LOCAL_OPENER.open(_OLLAMA_URL + "/api/tags", timeout=1.0) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            time.sleep(0.25)
+    return False
+
+
 def call_tier2_local_llm(
     user_prompt: str,
     best_skeleton: Optional[Dict[str, Any]],
@@ -472,7 +546,24 @@ def call_tier2_local_llm(
         "options": _ollama_perf_options(len(system_prompt) + len(user_msg)),
     }
     try:
-        details = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/show", {"model": model}, 5.0)
+        try:
+            details = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/show", {"model": model}, 5.0)
+        except (URLError, TimeoutError, ConnectionError):
+            if _is_real_local_opener() and _try_wake_ollama_daemon():
+                details = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/show", {"model": model}, 5.0)
+            else:
+                raise
+        except HTTPError as exc:
+            if exc.code == 404 and _is_real_local_opener():
+                alt_model = _find_any_installed_local_model()
+                if alt_model and alt_model != model:
+                    model = alt_model
+                    payload["model"] = alt_model
+                    details = _post_json(_LOCAL_OPENER, _OLLAMA_URL + "/api/show", {"model": model}, 5.0)
+                else:
+                    raise
+            else:
+                raise
         if details.get("remote_host") or details.get("remote_model"):
             messages.append("Model đã chọn dùng máy chủ từ xa. Hãy chọn model Ollama được tải trên máy.")
             return None

@@ -268,7 +268,7 @@ def install_all(
                 ides = [entry for entry in ides if entry["cli"].casefold() != str(ide_cli).casefold()]
                 ides.append(current)
             if sync_secondary_ides:
-                for ide_folder in (".antigravity-ide", ".antigravity"):
+                for ide_folder in (".vscode", ".vscode-insiders", ".antigravity-ide", ".antigravity", ".cursor", ".windsurf", ".vscodium"):
                     ext_dir = Path.home() / ide_folder / "extensions"
                     if ext_dir.is_dir():
                         _sync_vsix_into_extension_dir(vsix, pkg, ext_dir)

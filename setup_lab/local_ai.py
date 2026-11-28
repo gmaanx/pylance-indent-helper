@@ -113,12 +113,22 @@ def normalize_model(value: str) -> str:
 
 
 def find_ollama() -> Path | None:
-    in_path = shutil.which("ollama.exe")
+    in_path = shutil.which("ollama.exe") or shutil.which("ollama")
     if in_path:
         return Path(in_path).resolve()
+    candidates: list[Path] = []
     local_appdata = os.environ.get("LOCALAPPDATA")
     if local_appdata:
-        candidate = Path(local_appdata) / "Programs" / "Ollama" / "ollama.exe"
+        candidates.append(Path(local_appdata) / "Programs" / "Ollama" / "ollama.exe")
+    try:
+        candidates.append(Path.home() / "AppData" / "Local" / "Programs" / "Ollama" / "ollama.exe")
+    except Exception:
+        pass
+    for env_var in ("ProgramFiles", "ProgramFiles(x86)"):
+        val = os.environ.get(env_var)
+        if val:
+            candidates.append(Path(val) / "Ollama" / "ollama.exe")
+    for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
     return None
@@ -188,17 +198,67 @@ def _winget() -> str:
     return winget
 
 
-def _install_ollama() -> Path:
-    print("Dang cai Ollama bang WinGet cho tai khoan hien tai...", flush=True)
-    _run([
-        _winget(), "install", "--id", OLLAMA_PACKAGE, "--exact", "--source", "winget",
-        "--scope", "user", "--accept-source-agreements", "--accept-package-agreements",
-        "--no-upgrade", "--silent", "--disable-interactivity",
-    ], timeout=900)
+def _download_and_install_ollama_direct() -> Path:
+    """Fallback direct HTTPS installer for Windows lab PCs without WinGet / Microsoft Store."""
+    url = "https://ollama.com/download/OllamaSetup.exe"
+    installer_path = Path(tempfile.gettempdir()) / f"OllamaSetup_{os.getpid()}.exe"
+    print("Dang tai truc tiep bo cai Ollama chinh thuc (khong can WinGet / Admin)...", flush=True)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp, installer_path.open("wb") as out_f:
+            total = int(resp.headers.get("Content-Length") or 0)
+            downloaded = 0
+            last_pct = -10
+            while True:
+                chunk = resp.read(512 * 1024)
+                if not chunk:
+                    break
+                out_f.write(chunk)
+                downloaded += len(chunk)
+                if total > 0:
+                    pct = int(downloaded * 100 / total)
+                    if pct >= last_pct + 10:
+                        last_pct = pct
+                        print(f"  -> Da tai: {pct}% ({downloaded // (1024 * 1024)} MB / {total // (1024 * 1024)} MB)", flush=True)
+        print("Dang cai dat ngam Ollama cho tai khoan hien tai...", flush=True)
+        _run(
+            [
+                str(installer_path),
+                "/SP-",
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+                "/CURRENTUSER",
+            ],
+            timeout=600,
+        )
+    finally:
+        try:
+            installer_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     ollama = find_ollama()
     if ollama is None:
-        raise RuntimeError("WinGet da chay xong. Mo lai terminal va chay bo cai Ollama lan nua.")
+        raise RuntimeError("Khong tim thay ollama.exe sau khi cai dat truc tiep.")
     return ollama
+
+
+def _install_ollama() -> Path:
+    winget = shutil.which("winget.exe")
+    if winget is not None:
+        print("Dang cai Ollama bang WinGet cho tai khoan hien tai...", flush=True)
+        try:
+            _run([
+                winget, "install", "--id", OLLAMA_PACKAGE, "--exact", "--source", "winget",
+                "--scope", "user", "--accept-source-agreements", "--accept-package-agreements",
+                "--no-upgrade", "--silent", "--disable-interactivity",
+            ], timeout=900)
+            ollama = find_ollama()
+            if ollama is not None:
+                return ollama
+        except RuntimeError as exc:
+            print(f"[Luu y] WinGet khong kha dung tren may nay ({exc}). Chuyen sang tai truc tiep...", flush=True)
+    return _download_and_install_ollama_direct()
 
 
 def _wait_for_ollama(timeout: int = 30) -> list[dict]:
@@ -223,11 +283,13 @@ def _running_ollama(ollama: Path, models: list[dict] | None, *, keep_running: bo
         models = _models() if models is None else models
         if models is None:
             print(f"Dang khoi dong Ollama tren {OLLAMA_HOST}...", flush=True)
+            detach_flag = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) if (sys.platform == "win32" and keep_running) else 0
             started = subprocess.Popen(
                 [str(ollama), "serve"], env=_ollama_env(),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=(
-                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    detach_flag
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                     | getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 ),
             )
@@ -331,6 +393,10 @@ def _read_state(path: Path) -> dict:
     return state
 
 
+def _mirror_local_ai_path() -> Path:
+    return Path.home() / ".pylance-helper" / "local_ai.json"
+
+
 def _write_state(path: Path, state: dict) -> None:
     temporary = None
     try:
@@ -341,6 +407,15 @@ def _write_state(path: Path, state: dict) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+    # Mirror to unvirtualized ~/.pylance-helper/local_ai.json when writing to real user AppData
+    try:
+        home = Path.home().resolve()
+        if str(path.resolve()).casefold().startswith(str(home).casefold()):
+            mirror = _mirror_local_ai_path()
+            mirror.parent.mkdir(parents=True, exist_ok=True)
+            mirror.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def migrate_legacy_local_ai(config: dict) -> None:
@@ -560,6 +635,10 @@ def purge_ollama_completely() -> None:
         ):
             _force_rmtree(folder)
     _force_rmtree(Path.home() / ".ollama")
+    try:
+        _mirror_local_ai_path().unlink(missing_ok=True)
+    except OSError:
+        pass
     _scrub_ollama_windows_traces()
     print("[OK] Da xoa sach hoan toan Ollama, model, nhat ky va dau vet he thong.", flush=True)
 
@@ -683,6 +762,12 @@ def uninstall_local_ai(
                 elif managed_app:
                     print("Giu lai ung dung Ollama va cac model dung chung.", flush=True)
         path.unlink(missing_ok=True)
+        try:
+            home = Path.home().resolve()
+            if str(path.resolve()).casefold().startswith(str(home).casefold()):
+                _mirror_local_ai_path().unlink(missing_ok=True)
+        except OSError:
+            pass
     if remove_user_ollama:
         shutil.rmtree(path.parent, ignore_errors=True)
     print("[OK] Da go cau hinh AI cuc bo.", flush=True)
